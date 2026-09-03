@@ -3,7 +3,6 @@ Configuration management for AI Video Generator.
 Loads and validates all settings from environment variables.
 """
 
-import os
 from pathlib import Path
 from typing import Optional
 from pydantic_settings import BaseSettings
@@ -19,6 +18,12 @@ class Settings(BaseSettings):
     runway_api_key: str = Field(default="", alias="RUNWAY_API_KEY")
     elevenlabs_api_key: str = Field(default="", alias="ELEVENLABS_API_KEY")
     elevenlabs_voice_id: Optional[str] = Field(default=None, alias="ELEVENLABS_VOICE_ID")
+    pexels_api_key: str = Field(default="", alias="PEXELS_API_KEY")
+    pixabay_api_key: str = Field(default="", alias="PIXABAY_API_KEY")
+
+    # Content / Voice Languages
+    supported_languages: tuple[str, ...] = ("en", "ar", "fr", "de")
+    default_language: str = Field(default="en", alias="DEFAULT_LANGUAGE")
 
     # Video Generation
     max_video_duration: int = Field(default=120, alias="MAX_VIDEO_DURATION")
@@ -62,7 +67,6 @@ class Settings(BaseSettings):
 
     @validator("log_level")
     def validate_log_level(cls, v):
-        """Validate log level."""
         valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
         if v.upper() not in valid_levels:
             raise ValueError(f"Invalid log level: {v}. Must be one of {valid_levels}")
@@ -70,20 +74,23 @@ class Settings(BaseSettings):
 
     @validator("default_aspect_ratio")
     def validate_aspect_ratio(cls, v):
-        """Validate aspect ratio format."""
         if ":" not in v:
             raise ValueError(f"Aspect ratio must be in format 'W:H', got: {v}")
         return v
 
+    @validator("default_language")
+    def validate_language(cls, v):
+        if v not in cls.model_fields["supported_languages"].default:
+            raise ValueError("DEFAULT_LANGUAGE must be one of: en, ar, fr, de")
+        return v
+
     @validator("voice_over_volume", "background_music_volume")
     def validate_volume(cls, v):
-        """Validate volume is between 0 and 1."""
         if not 0 <= v <= 1:
             raise ValueError(f"Volume must be between 0 and 1, got: {v}")
         return v
 
     def ensure_directories(self):
-        """Create all required directories if they don't exist."""
         for dir_name in [
             self.logs_dir,
             self.temp_dir,
@@ -95,7 +102,6 @@ class Settings(BaseSettings):
             Path(dir_name).mkdir(parents=True, exist_ok=True)
 
     def validate_provider_keys(self):
-        """Validate that required API keys are set."""
         errors = []
         if not self.minimax_api_key:
             errors.append("MINIMAX_API_KEY not set")
@@ -103,7 +109,6 @@ class Settings(BaseSettings):
             errors.append("RUNWAY_API_KEY not set")
         if not self.elevenlabs_api_key:
             errors.append("ELEVENLABS_API_KEY not set")
-
         if errors:
             raise ValueError(
                 f"Missing required API keys: {', '.join(errors)}. "
@@ -111,11 +116,5 @@ class Settings(BaseSettings):
             )
 
 
-# Load settings
 settings = Settings()
-
-# Ensure directories exist
 settings.ensure_directories()
-
-# Optional: validate keys on startup (commented to allow testing without all keys)
-# settings.validate_provider_keys()
