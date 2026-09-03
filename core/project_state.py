@@ -85,11 +85,9 @@ class ProjectState(BaseModel):
         scene.status = SceneStatus.RUNNING
         scene.stage = stage
         scene.provider = provider
-        scene.attempts = 0
-        scene.provider_attempts = []
         scene.error_code = None
         scene.error_message = None
-        scene.started_at = self.now()
+        scene.started_at = scene.started_at or self.now()
         self.status = ProjectStatus.RUNNING
         self.current_stage = stage
         self.current_scene = scene_id
@@ -103,21 +101,13 @@ class ProjectState(BaseModel):
         scene.attempts += 1
         scene.provider = provider
         scene.stage = f"{provider}_generation" if provider != "free_media" else "free_media_search"
-        scene.provider_attempts.append(
-            ProviderAttempt(provider=provider, success=success, error=error)
-        )
+        scene.provider_attempts.append(ProviderAttempt(provider=provider, success=success, error=error))
         self.current_scene = scene_id
         self.current_stage = scene.stage
         self.updated_at = self.now()
         return scene
 
-    def complete_scene(
-        self,
-        scene_id: str,
-        output_path: Optional[str] = None,
-        asset_id: Optional[str] = None,
-        asset_metadata: Optional[dict] = None,
-    ) -> SceneState:
+    def complete_scene(self, scene_id: str, output_path: Optional[str] = None, asset_id: Optional[str] = None, asset_metadata: Optional[dict] = None) -> SceneState:
         scene = self.scene(scene_id)
         scene.status = SceneStatus.COMPLETED
         scene.completed_at = self.now()
