@@ -9,6 +9,7 @@ from .checkpoint_store import CheckpointStore
 from .project_state import ProjectState, SceneState, ProjectStatus
 from .scene_decision import SceneContext, decide_scene_media
 from .provider_engine import ProviderEngine
+from .provider_fallback import run_with_fallback
 from .scene_planner import plan_scenes
 from .visual_dna import ContinuityState, VisualDNA
 
@@ -17,6 +18,7 @@ from .visual_dna import ContinuityState, VisualDNA
 class SceneResult:
     output_path: Optional[str] = None
     asset_id: Optional[str] = None
+    asset_metadata: Optional[dict] = None
     media_mode: Optional[str] = None
     decision_reason: Optional[str] = None
     visual_prompt: Optional[str] = None
@@ -29,14 +31,7 @@ class SceneResult:
 class PipelineOrchestrator:
     """Coordinate scene execution while persisting progress after each step."""
 
-    def __init__(
-        self,
-        checkpoint_store: Optional[CheckpointStore] = None,
-        *,
-        visual_dna: Optional[VisualDNA] = None,
-        ai_providers: Sequence[str] = ("minimax", "runway"),
-        provider_engine: Optional[ProviderEngine] = None,
-    ) -> None:
+    def __init__(self, checkpoint_store: Optional[CheckpointStore] = None, *, visual_dna: Optional[VisualDNA] = None, ai_providers: Sequence[str] = ("minimax", "runway"), provider_engine: Optional[ProviderEngine] = None) -> None:
         self.checkpoints = checkpoint_store or CheckpointStore()
         self.visual_dna = visual_dna or VisualDNA()
         self.ai_providers = tuple(dict.fromkeys(p for p in ai_providers if p))
@@ -57,25 +52,12 @@ class PipelineOrchestrator:
                 "recurring_objects": list(self.visual_dna.recurring_objects),
                 "negative_constraints": list(self.visual_dna.negative_constraints),
             },
-            scenes=[{"scene_id": plan.scene_id} for plan in plans],
+            scenes=[{"scene_id": plan.scene_id, "target_duration": plan.duration_seconds} for plan in plans],
         )
         self.checkpoints.save(state)
         return state
 
-    def run(
-        self,
-        project_id: str,
-        executor: Optional[Callable[[SceneState], SceneResult]] = None,
-        *,
-        scene_context: Optional[Callable[[SceneState], SceneContext]] = None,
-        provider_executor: Optional[Callable[[SceneState, str], SceneResult]] = None,
-    ) -> ProjectState:
-        """Run incomplete scenes with provider-aware fallback.
-
-        ``provider_executor`` receives the actual provider selected by the
-        fallback engine. The legacy ``executor`` remains supported for callers
-        that supply their own fallback-aware implementation.
-        """
+    def run(self, project_id: str, executor: Optional[Callable[[SceneState], SceneResult]] = None, *, scene_context: Optional[Callable[[SceneState], SceneContext]] = None, provider_executor: Optional[Callable[[SceneState, str], SceneResult]] = None) -> ProjectState:
         if executor is None and provider_executor is None and self.provider_engine is None:
             raise ValueError("Provide executor, provider_executor, or provider_engine")
 
@@ -86,7 +68,7 @@ class PipelineOrchestrator:
 
         for scene in state.scenes:
             if scene.status.value == "completed":
-                continuity.mark_completed(scene.scene_id)
+                continuity.mark_completed(scene.scene_id, location=scene.location_ref, characters=scene.character_refs)
                 continue
 
             context = scene_context(scene) if scene_context else SceneContext(prompt=scene.prompt or scene.scene_id)
@@ -100,7 +82,8 @@ class PipelineOrchestrator:
             scene.character_refs = list(self.visual_dna.characters)
             scene.location_ref = self.visual_dna.locations[0] if self.visual_dna.locations else None
 
-            providers = self.ai_providers if decision.mode.value == "ai_video" else ("free_media",)
+            # AI -> next AI provider -> free stock. Stock-only decisions use stock directly.
+            providers = self.ai_providers + ("free_media",) if decision.mode.value == "ai_video" else ("free_media",)
             state.start_scene(scene.scene_id, stage="scene_execution", provider=providers[0] if providers else None)
             self.checkpoints.save(state)
 
@@ -112,8 +95,6 @@ class PipelineOrchestrator:
                         scene.attempts += 1
                         self.checkpoints.save(state)
                         return provider_executor(scene, provider)
-
-                    from .provider_fallback import run_with_fallback
                     fallback = run_with_fallback(providers, execute)
                     result = fallback.value
                     actual_provider = fallback.provider
@@ -123,10 +104,7 @@ class PipelineOrchestrator:
                         scene.provider = provider
                         scene.attempts += 1
                         self.checkpoints.save(state)
-                        operation = self.provider_engine.operations[provider]
-                        return operation(scene=scene)
-
-                    from .provider_fallback import run_with_fallback
+                        return self.provider_engine.operations[provider](scene=scene)
                     fallback = run_with_fallback(providers, execute_registered)
                     result = fallback.value
                     actual_provider = fallback.provider
@@ -135,22 +113,14 @@ class PipelineOrchestrator:
                     actual_provider = result.provider or providers[0]
 
                 scene.provider = result.provider or actual_provider
-                state.complete_scene(
-                    scene.scene_id,
-                    output_path=result.output_path,
-                    asset_id=result.asset_id,
-                )
+                state.complete_scene(scene.scene_id, output_path=result.output_path, asset_id=result.asset_id, asset_metadata=result.asset_metadata)
                 scene.media_mode = result.media_mode or decision.mode.value
                 scene.decision_reason = result.decision_reason or decision.reason
                 scene.visual_prompt = result.visual_prompt or visual_prompt
                 scene.visual_dna_id = result.visual_dna_id or self.visual_dna.stable_id()
                 scene.character_refs = list(result.character_refs or self.visual_dna.characters)
                 scene.location_ref = result.location_ref or scene.location_ref
-                continuity.mark_completed(
-                    scene.scene_id,
-                    location=scene.location_ref,
-                    characters=scene.character_refs,
-                )
+                continuity.mark_completed(scene.scene_id, location=scene.location_ref, characters=scene.character_refs)
                 self.checkpoints.save(state)
             except Exception as exc:
                 state.fail_scene(scene.scene_id, reason=str(exc))
