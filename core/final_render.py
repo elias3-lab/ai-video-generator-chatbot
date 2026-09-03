@@ -23,14 +23,15 @@ class FinalRenderer:
             if not os.path.exists(path):
                 raise VideoProcessingError(f"Scene video does not exist: {path}")
 
-        inputs = ["-i", path] for path in scene_paths
+        inputs: list[str] = []
         filter_parts: list[str] = []
         labels: list[str] = []
-        for index in range(len(scene_paths)):
+        for index, path in enumerate(scene_paths):
+            inputs.extend(["-i", path])
             label = f"v{index}"
             labels.append(f"[{label}]")
             filter_parts.append(
-                f"[{index}:v:0]scale=1920:1080:force_original_aspect_ratio=decrease," 
+                f"[{index}:v:0]scale=1920:1080:force_original_aspect_ratio=decrease,"
                 f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p,setpts=PTS-STARTPTS[{label}]"
             )
         filter_parts.append("".join(labels) + f"concat=n={len(scene_paths)}:v=1:a=0[vout]")
