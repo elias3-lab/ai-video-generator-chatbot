@@ -36,6 +36,8 @@ class SceneState(BaseModel):
     status: SceneStatus = SceneStatus.PENDING
     stage: Optional[str] = None
     provider: Optional[str] = None
+    media_mode: Optional[str] = None
+    decision_reason: Optional[str] = None
     attempts: int = 0
     error_code: Optional[str] = None
     error_message: Optional[str] = None
@@ -43,6 +45,11 @@ class SceneState(BaseModel):
     completed_at: Optional[str] = None
     output_path: Optional[str] = None
     asset_id: Optional[str] = None
+    prompt: Optional[str] = None
+    visual_prompt: Optional[str] = None
+    visual_dna_id: Optional[str] = None
+    character_refs: list[str] = Field(default_factory=list)
+    location_ref: Optional[str] = None
 
 
 class ProjectState(BaseModel):
@@ -53,6 +60,7 @@ class ProjectState(BaseModel):
     last_completed_scene: Optional[str] = None
     failure_reason: Optional[str] = None
     resume_from_scene: Optional[str] = None
+    visual_dna: dict = Field(default_factory=dict)
     updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     scenes: list[SceneState] = Field(default_factory=list)
 
