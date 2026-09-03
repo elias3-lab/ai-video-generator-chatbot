@@ -27,6 +27,13 @@ class SceneStatus(str, Enum):
     SKIPPED = "skipped"
 
 
+class ProviderAttempt(BaseModel):
+    provider: str
+    success: bool
+    error: Optional[str] = None
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
 class SceneState(BaseModel):
     scene_id: str
     status: SceneStatus = SceneStatus.PENDING
@@ -35,6 +42,7 @@ class SceneState(BaseModel):
     media_mode: Optional[str] = None
     decision_reason: Optional[str] = None
     attempts: int = 0
+    provider_attempts: list[ProviderAttempt] = Field(default_factory=list)
     error_code: Optional[str] = None
     error_message: Optional[str] = None
     started_at: Optional[str] = None
@@ -78,6 +86,7 @@ class ProjectState(BaseModel):
         scene.stage = stage
         scene.provider = provider
         scene.attempts = 0
+        scene.provider_attempts = []
         scene.error_code = None
         scene.error_message = None
         scene.started_at = self.now()
@@ -86,6 +95,19 @@ class ProjectState(BaseModel):
         self.current_scene = scene_id
         self.failure_reason = None
         self.resume_from_scene = scene_id
+        self.updated_at = self.now()
+        return scene
+
+    def record_provider_attempt(self, scene_id: str, provider: str, success: bool, error: Optional[str] = None) -> SceneState:
+        scene = self.scene(scene_id)
+        scene.attempts += 1
+        scene.provider = provider
+        scene.stage = f"{provider}_generation" if provider != "free_media" else "free_media_search"
+        scene.provider_attempts.append(
+            ProviderAttempt(provider=provider, success=success, error=error)
+        )
+        self.current_scene = scene_id
+        self.current_stage = scene.stage
         self.updated_at = self.now()
         return scene
 
@@ -142,6 +164,7 @@ class ProjectState(BaseModel):
             "error_reason": self.failure_reason or (scene.error_message if scene else None),
             "timestamp": self.updated_at,
             "retry_count": scene.attempts if scene else 0,
+            "provider_attempts": [attempt.model_dump(mode="json") for attempt in scene.provider_attempts] if scene else [],
             "completed_scenes": completed,
             "total_scenes": len(self.scenes),
             "remaining_scenes": max(0, len(self.scenes) - completed),
