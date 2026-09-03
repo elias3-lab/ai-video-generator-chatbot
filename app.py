@@ -9,7 +9,6 @@ import gradio as gr
 
 from core.final_render import FinalRenderer
 from core.orchestrator import PipelineOrchestrator
-from core.provider_engine import ProviderEngine
 from core.project_state import ProjectStatus
 from providers.registry import ProviderRegistry
 from core.scene_decision import SceneContext
