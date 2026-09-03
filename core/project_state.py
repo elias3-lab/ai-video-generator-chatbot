@@ -1,8 +1,4 @@
-"""Persistent project state, scene checkpoints, and diagnostics.
-
-The state model is intentionally provider-agnostic so the pipeline can resume
-without being coupled to a specific video generation service.
-"""
+"""Persistent project state, scene checkpoints, and diagnostics."""
 
 from __future__ import annotations
 
@@ -45,6 +41,8 @@ class SceneState(BaseModel):
     completed_at: Optional[str] = None
     output_path: Optional[str] = None
     asset_id: Optional[str] = None
+    asset_metadata: dict = Field(default_factory=dict)
+    target_duration: Optional[int] = None
     prompt: Optional[str] = None
     visual_prompt: Optional[str] = None
     visual_dna_id: Optional[str] = None
@@ -79,7 +77,7 @@ class ProjectState(BaseModel):
         scene.status = SceneStatus.RUNNING
         scene.stage = stage
         scene.provider = provider
-        scene.attempts += 1
+        scene.attempts = 0
         scene.error_code = None
         scene.error_message = None
         scene.started_at = self.now()
@@ -96,12 +94,15 @@ class ProjectState(BaseModel):
         scene_id: str,
         output_path: Optional[str] = None,
         asset_id: Optional[str] = None,
+        asset_metadata: Optional[dict] = None,
     ) -> SceneState:
         scene = self.scene(scene_id)
         scene.status = SceneStatus.COMPLETED
         scene.completed_at = self.now()
         scene.output_path = output_path
         scene.asset_id = asset_id
+        if asset_metadata is not None:
+            scene.asset_metadata = asset_metadata
         self.last_completed_scene = scene_id
         self.resume_from_scene = self.next_pending_scene()
         self.current_scene = self.resume_from_scene
@@ -111,12 +112,7 @@ class ProjectState(BaseModel):
             self.current_stage = None
         return scene
 
-    def fail_scene(
-        self,
-        scene_id: str,
-        reason: str,
-        error_code: Optional[str] = None,
-    ) -> SceneState:
+    def fail_scene(self, scene_id: str, reason: str, error_code: Optional[str] = None) -> SceneState:
         scene = self.scene(scene_id)
         scene.status = SceneStatus.FAILED
         scene.error_message = reason
@@ -156,10 +152,7 @@ class ProjectState(BaseModel):
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         self.updated_at = self.now()
-        destination.write_text(
-            json.dumps(self.model_dump(mode="json"), indent=2),
-            encoding="utf-8",
-        )
+        destination.write_text(json.dumps(self.model_dump(mode="json"), indent=2), encoding="utf-8")
 
     @classmethod
     def load(cls, path: str | Path) -> "ProjectState":
