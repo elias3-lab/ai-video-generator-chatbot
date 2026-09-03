@@ -37,41 +37,26 @@ class ProviderRegistry:
             str(output),
             duration=10 if getattr(scene, "target_duration", 10) >= 10 else 6,
         )
-        return SceneResult(
-            output_path=result["output_path"],
-            media_mode="ai_video",
-            provider="minimax",
-        )
+        return SceneResult(output_path=result["output_path"], media_mode="ai_video", provider="minimax")
 
     def _runway(self, *, scene: Any) -> SceneResult:
         provider = RunwayProvider()
         output = Path("outputs") / f"{scene.scene_id}_runway.mp4"
         duration = max(2, min(10, int(getattr(scene, "target_duration", 5))))
-        task_id = provider.generate_video(
-            scene.visual_prompt or scene.prompt or scene.scene_id,
-            ratio="1280:720",
-            duration=duration,
-        )
+        task_id = provider.generate_video(scene.visual_prompt or scene.prompt or scene.scene_id, ratio="1280:720", duration=duration)
         output_url = provider.wait_for_completion(task_id)
         provider.download_video(output_url, str(output))
         provider.validate_video(str(output))
-        return SceneResult(
-            output_path=str(output),
-            media_mode="ai_video",
-            provider="runway",
-        )
+        return SceneResult(output_path=str(output), media_mode="ai_video", provider="runway")
 
     def _free_media(self, *, scene: Any) -> SceneResult:
         query = scene.prompt or scene.scene_id
         output = Path("outputs") / f"{scene.scene_id}_stock.mp4"
-        asset, path = self.media_search.search_and_download(
-            query,
-            output,
-            target_duration=getattr(scene, "target_duration", None),
-        )
+        asset, path = self.media_search.search_and_download(query, output, target_duration=getattr(scene, "target_duration", None))
         return SceneResult(
             output_path=path,
             asset_id=asset.asset_id,
+            asset_metadata=asset.metadata(),
             media_mode="free_media",
             decision_reason="Free stock media selected/downloaded.",
             provider="free_media",
