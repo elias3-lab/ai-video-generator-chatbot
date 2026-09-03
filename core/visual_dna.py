@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
@@ -33,6 +35,22 @@ class VisualDNA:
         if self.negative_constraints:
             parts.append("Avoid: " + "; ".join(self.negative_constraints))
         return ". ".join(parts) + "."
+
+    def stable_id(self) -> str:
+        """Return a deterministic ID for this exact Visual DNA configuration."""
+        payload = {
+            "style": self.style,
+            "camera_language": self.camera_language,
+            "color_language": self.color_language,
+            "aspect_ratio": self.aspect_ratio,
+            "characters": self.characters,
+            "locations": self.locations,
+            "wardrobe": self.wardrobe,
+            "recurring_objects": self.recurring_objects,
+            "negative_constraints": self.negative_constraints,
+        }
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass
