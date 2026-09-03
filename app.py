@@ -20,6 +20,8 @@ DURATION_OPTIONS = {
     "5 min": 300,
 }
 DEFAULT_DURATION = "4 min"
+SERVER_NAME = "0.0.0.0"
+SERVER_PORT = 7860
 
 
 def _duration_seconds(label: str) -> int:
@@ -125,4 +127,4 @@ def build_ui() -> gr.Blocks:
 
 
 if __name__ == "__main__":
-    build_ui().launch()
+    build_ui().launch(server_name=SERVER_NAME, server_port=SERVER_PORT)
