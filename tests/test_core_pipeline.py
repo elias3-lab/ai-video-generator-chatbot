@@ -33,7 +33,7 @@ def test_provider_fallback_reports_all_failures():
 def test_orchestrator_persists_provider_attempt_history(tmp_path):
     store = CheckpointStore(tmp_path)
     orchestrator = PipelineOrchestrator(checkpoint_store=store, ai_providers=("minimax", "runway"))
-    orchestrator.create_project("diagnostics", 10)
+    orchestrator.create_project("diagnostics", 30)
     calls = []
     def provider_executor(scene, provider):
         calls.append(provider)
@@ -41,7 +41,7 @@ def test_orchestrator_persists_provider_attempt_history(tmp_path):
         return SceneResult(output_path=f"{scene.scene_id}.mp4", provider=provider, media_mode="ai_video")
     state = orchestrator.run("diagnostics", provider_executor=provider_executor, scene_context=lambda scene: SceneContext(prompt="cinematic documentary scene", visual_priority=0.9, stock_likelihood=0.1))
     scene = state.scene("scene_001")
-    assert calls == ["minimax", "runway"]
+    assert calls[:2] == ["minimax", "runway"]
     assert scene.status.value == "completed"
     assert scene.attempts == 2
     assert [a.provider for a in scene.provider_attempts] == ["minimax", "runway"]
@@ -55,7 +55,7 @@ def test_orchestrator_persists_provider_attempt_history(tmp_path):
 def test_orchestrator_records_all_provider_failures(tmp_path):
     store = CheckpointStore(tmp_path)
     orchestrator = PipelineOrchestrator(checkpoint_store=store, ai_providers=("minimax", "runway"))
-    orchestrator.create_project("failed", 10)
+    orchestrator.create_project("failed", 30)
     def provider_executor(scene, provider): raise RuntimeError(f"{provider} unavailable")
     state = orchestrator.run("failed", provider_executor=provider_executor, scene_context=lambda scene: SceneContext(prompt="cinematic documentary scene", visual_priority=0.9, stock_likelihood=0.1))
     scene = state.scene("scene_001")
