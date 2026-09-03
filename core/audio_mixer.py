@@ -59,11 +59,15 @@ class AudioMixer:
         return AudioTimeline(voice, music_clip, normalized_sfx, duration)
 
     @staticmethod
-    def build_filter_complex(timeline: AudioTimeline) -> Tuple[str, str]:
+    def build_filter_complex(
+        timeline: AudioTimeline,
+        *,
+        input_offset: int = 0,
+    ) -> Tuple[str, str]:
         """Return FFmpeg filter_complex and final audio label.
 
-        Voice-over is kept prominent. Music is automatically ducked when voice
-        exists, while SFX remain independently timed and gain-controlled.
+        ``input_offset`` is the number of non-audio inputs that precede the
+        audio files. A video input therefore uses offset=1.
         """
         clips: List[AudioClip] = []
         if timeline.voice_over:
@@ -73,14 +77,17 @@ class AudioMixer:
         clips.extend(timeline.sfx)
         if not clips:
             raise ValueError("At least one audio clip is required")
+        if input_offset < 0:
+            raise ValueError("input_offset cannot be negative")
 
         filters: List[str] = []
         labels: List[str] = []
         has_voice = timeline.voice_over is not None
 
         for index, clip in enumerate(clips):
+            input_index = index + input_offset
             label = f"a{index}"
-            chain = [f"[{index}:a]aresample=48000"]
+            chain = [f"aresample=48000"]
             volume = clip.volume
             if clip.kind == "music" and has_voice:
                 volume = AudioMixer.DUCKED_MUSIC_VOLUME
@@ -92,7 +99,7 @@ class AudioMixer:
             if clip.fade_out > 0 and timeline.duration:
                 fade_start = max(0.0, timeline.duration - clip.fade_out)
                 chain.append(f"afade=t=out:st={fade_start:g}:d={clip.fade_out:g}")
-            filters.append(f"[{index}:a]" + ",".join(chain[1:]) + f"[{label}]")
+            filters.append(f"[{input_index}:a]" + ",".join(chain) + f"[{label}]")
             labels.append(f"[{label}]")
 
         mix = "".join(labels) + f"amix=inputs={len(labels)}:duration=longest:dropout_transition=2,loudnorm=I=-16:TP=-1.5:LRA=11[outa]"
@@ -122,7 +129,10 @@ class AudioMixer:
         for clip in clips:
             command += ["-i", clip.path]
 
-        filter_complex, final_label = AudioMixer.build_filter_complex(timeline)
+        filter_complex, final_label = AudioMixer.build_filter_complex(
+            timeline,
+            input_offset=1 if video_path else 0,
+        )
         command += ["-filter_complex", filter_complex, "-map", final_label]
         if video_path:
             command += ["-map", "0:v:0", "-c:v", "copy"]
