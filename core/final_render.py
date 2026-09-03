@@ -1,4 +1,4 @@
-"""Final project rendering: concatenate scenes and apply the audio timeline."""
+"""Final project rendering: normalize scenes, concatenate, and mix audio."""
 
 from __future__ import annotations
 
@@ -12,30 +12,48 @@ from utils.errors import VideoProcessingError
 
 
 class FinalRenderer:
-    """Render completed scene videos into one final MP4 with mixed audio."""
+    """Render completed scene videos into one consistent final MP4."""
 
     @staticmethod
     def _concat_scenes(scene_paths: Sequence[str], output_path: str) -> None:
+        """Normalize mixed scene inputs and concatenate them with FFmpeg."""
         if not scene_paths:
             raise VideoProcessingError("No completed scene videos to render")
-        concat_file = f"{output_path}.concat.txt"
-        try:
-            with open(concat_file, "w", encoding="utf-8") as handle:
-                for path in scene_paths:
-                    if not os.path.exists(path):
-                        raise VideoProcessingError(f"Scene video does not exist: {path}")
-                    handle.write(f"file '{os.path.abspath(path)}'\n")
-            result = subprocess.run(
-                ["ffmpeg", "-f", "concat", "-safe", "0", "-i", concat_file, "-c", "copy", "-y", output_path],
-                capture_output=True,
-                text=True,
-                check=False,
+        for path in scene_paths:
+            if not os.path.exists(path):
+                raise VideoProcessingError(f"Scene video does not exist: {path}")
+
+        inputs = ["-i", path] for path in scene_paths
+        filter_parts: list[str] = []
+        labels: list[str] = []
+        for index in range(len(scene_paths)):
+            label = f"v{index}"
+            labels.append(f"[{label}]")
+            filter_parts.append(
+                f"[{index}:v:0]scale=1920:1080:force_original_aspect_ratio=decrease," 
+                f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p,setpts=PTS-STARTPTS[{label}]"
             )
-            if result.returncode != 0:
-                raise VideoProcessingError(f"Scene concatenation failed: {result.stderr[:300]}")
-        finally:
-            if os.path.exists(concat_file):
-                os.remove(concat_file)
+        filter_parts.append("".join(labels) + f"concat=n={len(scene_paths)}:v=1:a=0[vout]")
+
+        command = ["ffmpeg", "-y"] + inputs + [
+            "-filter_complex",
+            ";".join(filter_parts),
+            "-map",
+            "[vout]",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            output_path,
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise VideoProcessingError(f"Scene concatenation failed: {result.stderr[:300]}")
 
     @staticmethod
     def render(
@@ -66,6 +84,8 @@ class FinalRenderer:
         command = AudioMixer.build_ffmpeg_command(timeline, str(output), video_path=video_only)
         result = subprocess.run(command, capture_output=True, text=True, check=False)
         if result.returncode != 0:
+            if os.path.exists(video_only):
+                os.remove(video_only)
             raise VideoProcessingError(f"Final audio render failed: {result.stderr[:300]}")
         if os.path.exists(video_only):
             os.remove(video_only)
