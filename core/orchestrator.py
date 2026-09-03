@@ -82,7 +82,6 @@ class PipelineOrchestrator:
             scene.character_refs = list(self.visual_dna.characters)
             scene.location_ref = self.visual_dna.locations[0] if self.visual_dna.locations else None
 
-            # AI -> next AI provider -> free stock. Stock-only decisions use stock directly.
             providers = self.ai_providers + ("free_media",) if decision.mode.value == "ai_video" else ("free_media",)
             state.start_scene(scene.scene_id, stage="scene_execution", provider=providers[0] if providers else None)
             self.checkpoints.save(state)
@@ -92,9 +91,16 @@ class PipelineOrchestrator:
                     def execute(provider: str) -> SceneResult:
                         scene.stage = f"{provider}_generation" if provider != "free_media" else "free_media_search"
                         scene.provider = provider
-                        scene.attempts += 1
                         self.checkpoints.save(state)
-                        return provider_executor(scene, provider)
+                        try:
+                            result = provider_executor(scene, provider)
+                        except Exception:
+                            state.record_provider_attempt(scene.scene_id, provider, False, error="provider execution failed")
+                            self.checkpoints.save(state)
+                            raise
+                        state.record_provider_attempt(scene.scene_id, provider, True)
+                        self.checkpoints.save(state)
+                        return result
                     fallback = run_with_fallback(providers, execute)
                     result = fallback.value
                     actual_provider = fallback.provider
@@ -102,15 +108,23 @@ class PipelineOrchestrator:
                     def execute_registered(provider: str) -> SceneResult:
                         scene.stage = f"{provider}_generation" if provider != "free_media" else "free_media_search"
                         scene.provider = provider
-                        scene.attempts += 1
                         self.checkpoints.save(state)
-                        return self.provider_engine.operations[provider](scene=scene)
+                        try:
+                            result = self.provider_engine.operations[provider](scene=scene)
+                        except Exception:
+                            state.record_provider_attempt(scene.scene_id, provider, False, error="provider execution failed")
+                            self.checkpoints.save(state)
+                            raise
+                        state.record_provider_attempt(scene.scene_id, provider, True)
+                        self.checkpoints.save(state)
+                        return result
                     fallback = run_with_fallback(providers, execute_registered)
                     result = fallback.value
                     actual_provider = fallback.provider
                 else:
                     result = executor(scene)  # type: ignore[misc]
                     actual_provider = result.provider or providers[0]
+                    state.record_provider_attempt(scene.scene_id, actual_provider, True)
 
                 scene.provider = result.provider or actual_provider
                 state.complete_scene(scene.scene_id, output_path=result.output_path, asset_id=result.asset_id, asset_metadata=result.asset_metadata)
@@ -123,6 +137,10 @@ class PipelineOrchestrator:
                 continuity.mark_completed(scene.scene_id, location=scene.location_ref, characters=scene.character_refs)
                 self.checkpoints.save(state)
             except Exception as exc:
+                if not scene.provider_attempts:
+                    state.record_provider_attempt(scene.scene_id, scene.provider or "unknown", False, error=str(exc))
+                elif scene.provider_attempts[-1].success:
+                    state.record_provider_attempt(scene.scene_id, scene.provider or "unknown", False, error=str(exc))
                 state.fail_scene(scene.scene_id, reason=str(exc))
                 self.checkpoints.save(state)
                 break
