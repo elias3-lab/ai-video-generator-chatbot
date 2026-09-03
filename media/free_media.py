@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import quote_plus
+from urllib.parse import quote
 
 import requests
 
@@ -29,7 +30,7 @@ class MediaAsset:
 
 
 class FreeMediaSearch:
-    """Search Pexels, Pixabay and Wikimedia Commons without exposing keys."""
+    """Search and download free stock video with source/license metadata."""
 
     def __init__(
         self,
@@ -50,6 +51,71 @@ class FreeMediaSearch:
             results.extend(self._pixabay(query, per_source))
         results.extend(self._wikimedia(query, per_source))
         return results
+
+    @staticmethod
+    def select_best(
+        assets: list[MediaAsset],
+        *,
+        target_duration: Optional[float] = None,
+        prefer_landscape: bool = True,
+    ) -> MediaAsset:
+        if not assets:
+            raise ValueError("No free-media assets found")
+
+        source_rank = {"pexels": 3, "pixabay": 2, "wikimedia_commons": 1}
+
+        def score(asset: MediaAsset) -> tuple[float, int, int]:
+            duration_score = 0.0
+            if target_duration and asset.duration_seconds:
+                duration_score = -abs(asset.duration_seconds - target_duration)
+            landscape_score = 1 if (asset.width or 0) >= (asset.height or 0) else 0
+            return (
+                duration_score if target_duration else 0.0,
+                landscape_score if prefer_landscape else 0,
+                source_rank.get(asset.source, 0),
+            )
+
+        return max(assets, key=score)
+
+    def download(self, asset: MediaAsset, output_path: str | Path) -> str:
+        if not asset.download_url:
+            raise ValueError(f"Asset {asset.asset_id} has no download URL")
+        destination = Path(output_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        response = requests.get(asset.download_url, stream=True, timeout=self.timeout)
+        response.raise_for_status()
+        with destination.open("wb") as handle:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    handle.write(chunk)
+        if not destination.exists() or destination.stat().st_size == 0:
+            raise IOError(f"Downloaded media is empty: {destination}")
+        return str(destination)
+
+    def search_and_download(
+        self,
+        query: str,
+        output_path: str | Path,
+        *,
+        target_duration: Optional[float] = None,
+        per_source: int = 5,
+    ) -> tuple[MediaAsset, str]:
+        assets = self.search(query, per_source=per_source)
+        last_error: Optional[Exception] = None
+        for asset in sorted(
+            assets,
+            key=lambda item: (
+                -(abs((item.duration_seconds or target_duration or 0) - target_duration))
+                if target_duration and item.duration_seconds
+                else 0,
+                -(item.width or 0),
+            ),
+        ):
+            try:
+                return asset, self.download(asset, output_path)
+            except Exception as exc:
+                last_error = exc
+        raise IOError(f"Unable to download any free-media result: {last_error}")
 
     def _pexels(self, query: str, limit: int) -> list[MediaAsset]:
         response = requests.get(
@@ -143,12 +209,13 @@ class FreeMediaSearch:
             meta = info.get("extmetadata", {})
             license_name = (meta.get("LicenseShortName") or {}).get("value")
             creator = (meta.get("Artist") or {}).get("value")
+            title = page.get("title", "")
             assets.append(
                 MediaAsset(
                     source="wikimedia_commons",
                     asset_id=str(page.get("pageid")),
-                    title=page.get("title", ""),
-                    page_url="https://commons.wikimedia.org/wiki/" + quote_plus(page.get("title", "").replace(" ", "_")),
+                    title=title,
+                    page_url="https://commons.wikimedia.org/wiki/" + quote(title.replace(" ", "_")),
                     download_url=info.get("url", ""),
                     creator=creator,
                     license_name=license_name,
