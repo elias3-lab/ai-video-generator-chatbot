@@ -94,17 +94,28 @@ def build_ui() -> gr.Blocks:
 
         with gr.Group(elem_classes=["castelou-card"]):
             gr.Markdown("### Type")
-            gr.Radio(["Documentary", "Film"], value="Documentary", label=None, interactive=False)
+            content_type = gr.Radio(
+                ["Documentary", "Film"],
+                value="Documentary",
+                label=None,
+                interactive=True,
+            )
 
             gr.Markdown("### Duration")
             duration = gr.Radio(
                 list(DURATION_OPTIONS.keys()),
                 value=DEFAULT_DURATION,
                 label=None,
+                interactive=True,
             )
 
             gr.Markdown("### Format")
-            gr.Radio(["YouTube 16:9", "Shorts 9:16"], value="YouTube 16:9", label=None, interactive=False)
+            video_format = gr.Radio(
+                ["YouTube 16:9", "Shorts 9:16"],
+                value="YouTube 16:9",
+                label=None,
+                interactive=True,
+            )
 
             prompt = gr.Textbox(
                 label="Prompt",
