@@ -3,6 +3,7 @@ from core.scene_decision import SceneContext, SceneMediaMode, decide_scene_media
 from core.scene_planner import plan_scenes, validate_target_duration
 from core.provider_fallback import AllProvidersFailed, run_with_fallback
 from core.checkpoint_store import CheckpointStore
+from core.visual_dna import VisualDNA
 
 
 def test_provider_fallback_uses_next_provider():
@@ -87,3 +88,11 @@ def test_scene_decision_prefers_stock_when_stock_is_strong():
 def test_scene_decision_prefers_ai_for_high_visual_priority():
     decision = decide_scene_media(SceneContext(prompt="cinematic reenactment", visual_priority=0.9, stock_likelihood=0.1))
     assert decision.mode == SceneMediaMode.AI_VIDEO
+
+
+def test_visual_dna_id_is_deterministic_and_changes_with_content():
+    first = VisualDNA(style="cinematic documentary", characters=("traveler",)).stable_id()
+    second = VisualDNA(style="cinematic documentary", characters=("traveler",)).stable_id()
+    changed = VisualDNA(style="cinematic documentary", characters=("historian",)).stable_id()
+    assert first == second
+    assert first != changed
