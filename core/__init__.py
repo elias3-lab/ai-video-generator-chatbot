@@ -6,6 +6,7 @@ from .project_state import ProjectState, SceneState, ProjectStatus, SceneStatus
 from .scene_decision import SceneContext, SceneDecision, SceneMediaMode, decide_scene_media
 from .scene_planner import ScenePlan, plan_scenes, validate_target_duration
 from .provider_fallback import Attempt, FallbackResult, AllProvidersFailed, run_with_fallback
+from .visual_dna import VisualDNA, ContinuityState
 
 __all__ = [
     "MediaMode",
@@ -28,4 +29,6 @@ __all__ = [
     "FallbackResult",
     "AllProvidersFailed",
     "run_with_fallback",
+    "VisualDNA",
+    "ContinuityState",
 ]
