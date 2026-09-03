@@ -23,3 +23,29 @@ jobs:
           pip install pytest
       - name: Run tests
         run: pytest -q
+
+  docker-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -t castelou-ai-video-generator:ci .
+      - name: Start container
+        run: docker run -d --name castelou-ci -p 7860:7860 castelou-ai-video-generator:ci
+      - name: Wait for Gradio startup
+        run: |
+          for i in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:7860/ > /dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs castelou-ci
+          exit 1
+      - name: Show container logs
+        if: always()
+        run: docker logs castelou-ci
+      - name: Stop container
+        if: always()
+        run: docker rm -f castelou-ci
