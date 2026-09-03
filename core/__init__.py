@@ -1,5 +1,7 @@
 """Core project orchestration primitives."""
 
+from .audio_mixer import AudioClip, AudioMixer, AudioTimeline
+from .final_render import FinalRenderer
 from .media_router import MediaMode, RouteDecision, SmartMediaRouter
 from .orchestrator import PipelineOrchestrator, SceneResult
 from .project_state import ProjectState, SceneState, ProjectStatus, SceneStatus
@@ -10,6 +12,10 @@ from .provider_engine import ProviderEngine, ProviderOperationResult
 from .visual_dna import VisualDNA, ContinuityState
 
 __all__ = [
+    "AudioClip",
+    "AudioMixer",
+    "AudioTimeline",
+    "FinalRenderer",
     "MediaMode",
     "RouteDecision",
     "SmartMediaRouter",
