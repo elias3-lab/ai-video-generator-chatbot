@@ -9,6 +9,8 @@ from urllib.parse import quote
 
 import requests
 
+from utils.video_processor import VideoProcessor
+
 
 @dataclass(frozen=True)
 class MediaAsset:
@@ -76,6 +78,11 @@ class FreeMediaSearch:
             raise IOError(f"Downloaded media is empty: {destination}")
         return str(destination)
 
+    def _validate_download(self, path: str) -> str:
+        """Reject downloads that are not valid video files before pipeline use."""
+        VideoProcessor.validate_video_file(path)
+        return path
+
     def search_and_download(self, query: str, output_path: str | Path, *, target_duration: Optional[float] = None, per_source: int = 5) -> tuple[MediaAsset, str]:
         assets = self.search(query, per_source=per_source)
         if not assets:
@@ -92,10 +99,15 @@ class FreeMediaSearch:
         last_error: Optional[Exception] = None
         for asset in ordered:
             try:
-                return asset, self.download(asset, output_path)
+                path = self.download(asset, output_path)
+                return asset, self._validate_download(path)
             except Exception as exc:
                 last_error = exc
-        raise IOError(f"Unable to download any free-media result: {last_error}")
+                try:
+                    Path(output_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+        raise IOError(f"Unable to download any valid free-media result: {last_error}")
 
     def _pexels(self, query: str, limit: int) -> list[MediaAsset]:
         response = requests.get("https://api.pexels.com/v1/videos/search", headers={"Authorization": self.pexels_api_key}, params={"query": query, "orientation": "landscape", "per_page": limit}, timeout=self.timeout)
