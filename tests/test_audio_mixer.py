@@ -25,17 +25,20 @@ def test_music_is_ducked_when_voice_over_exists():
     assert output == "[outa]"
 
 
-def test_sfx_is_timed_and_video_command_keeps_video_stream():
+def test_video_command_offsets_audio_inputs_after_video():
     timeline = AudioMixer.build_timeline(
         voice_over="voice.mp3",
+        music="music.mp3",
         sfx=(AudioClip("door.wav", start=4.5, fade_in=0.2),),
         duration=20,
     )
     command = AudioMixer.build_ffmpeg_command(timeline, "final.mp4", video_path="video.mp4")
+    filter_complex = command[command.index("-filter_complex") + 1]
 
     assert command[0] == "ffmpeg"
-    assert "-i" in command
-    assert "adelay=4500:all=1" in " ".join(command)
-    assert "-map" in command
+    assert "adelay=4500:all=1" in filter_complex
+    assert "[1:a]aresample=48000" in filter_complex
+    assert "[2:a]aresample=48000" in filter_complex
+    assert "[3:a]aresample=48000" in filter_complex
     assert "0:v:0" in command
     assert command[-2:] == ["-y", "final.mp4"]
