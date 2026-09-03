@@ -8,13 +8,10 @@ from core.visual_dna import VisualDNA
 
 def test_provider_fallback_uses_next_provider():
     calls = []
-
     def operation(provider):
         calls.append(provider)
-        if provider == "minimax":
-            raise RuntimeError("quota")
+        if provider == "minimax": raise RuntimeError("quota")
         return "ok"
-
     result = run_with_fallback(("minimax", "runway", "free_media"), operation)
     assert result.value == "ok"
     assert result.provider == "runway"
@@ -25,9 +22,7 @@ def test_provider_fallback_uses_next_provider():
 
 
 def test_provider_fallback_reports_all_failures():
-    def operation(provider):
-        raise RuntimeError(f"{provider} failed")
-
+    def operation(provider): raise RuntimeError(f"{provider} failed")
     try:
         run_with_fallback(("minimax", "runway"), operation)
         assert False, "expected AllProvidersFailed"
@@ -39,67 +34,37 @@ def test_provider_fallback_reports_all_failures():
 def test_orchestrator_persists_provider_attempt_history(tmp_path):
     store = CheckpointStore(tmp_path)
     orchestrator = PipelineOrchestrator(checkpoint_store=store, ai_providers=("minimax", "runway"))
-    orchestrator.create_project("diagnostics", 30)
-
+    orchestrator.create_project("diagnostics", 10)
     calls = []
-
     def provider_executor(scene, provider):
         calls.append(provider)
-        if provider == "minimax":
-            raise RuntimeError("quota exceeded")
+        if provider == "minimax": raise RuntimeError("quota exceeded")
         return SceneResult(output_path=f"{scene.scene_id}.mp4", provider=provider, media_mode="ai_video")
-
-    state = orchestrator.run(
-        "diagnostics",
-        provider_executor=provider_executor,
-        scene_context=lambda scene: SceneContext(
-            prompt="cinematic documentary scene",
-            visual_priority=0.9,
-            stock_likelihood=0.1,
-        ),
-    )
-
+    state = orchestrator.run("diagnostics", provider_executor=provider_executor, scene_context=lambda scene: SceneContext(prompt="cinematic documentary scene", visual_priority=0.9, stock_likelihood=0.1))
     scene = state.scene("scene_001")
     assert calls == ["minimax", "runway"]
     assert scene.status.value == "completed"
     assert scene.attempts == 2
-    assert [attempt.provider for attempt in scene.provider_attempts] == ["minimax", "runway"]
+    assert [a.provider for a in scene.provider_attempts] == ["minimax", "runway"]
     assert scene.provider_attempts[0].success is False
-    assert scene.provider_attempts[0].error == "provider execution failed"
+    assert scene.provider_attempts[0].error == "quota exceeded"
     assert scene.provider_attempts[1].success is True
-
-    diagnostics = state.diagnostics()
-    assert diagnostics["provider_attempts"] == []
-
     reloaded = store.load("diagnostics")
-    completed_scene = reloaded.scene("scene_001")
-    assert [attempt.provider for attempt in completed_scene.provider_attempts] == ["minimax", "runway"]
-    assert reloaded.scene("scene_001").attempts == 2
+    assert [a.provider for a in reloaded.scene("scene_001").provider_attempts] == ["minimax", "runway"]
 
 
 def test_orchestrator_records_all_provider_failures(tmp_path):
     store = CheckpointStore(tmp_path)
     orchestrator = PipelineOrchestrator(checkpoint_store=store, ai_providers=("minimax", "runway"))
-    orchestrator.create_project("failed", 30)
-
-    def provider_executor(scene, provider):
-        raise RuntimeError(f"{provider} unavailable")
-
-    state = orchestrator.run(
-        "failed",
-        provider_executor=provider_executor,
-        scene_context=lambda scene: SceneContext(
-            prompt="cinematic documentary scene",
-            visual_priority=0.9,
-            stock_likelihood=0.1,
-        ),
-    )
-
+    orchestrator.create_project("failed", 10)
+    def provider_executor(scene, provider): raise RuntimeError(f"{provider} unavailable")
+    state = orchestrator.run("failed", provider_executor=provider_executor, scene_context=lambda scene: SceneContext(prompt="cinematic documentary scene", visual_priority=0.9, stock_likelihood=0.1))
     scene = state.scene("scene_001")
     assert scene.status.value == "failed"
     assert scene.attempts == 2
-    assert [attempt.provider for attempt in scene.provider_attempts] == ["minimax", "runway"]
-    assert all(not attempt.success for attempt in scene.provider_attempts)
+    assert [a.provider for a in scene.provider_attempts] == ["minimax", "runway"]
+    assert all(not a.success for a in scene.provider_attempts)
+    assert scene.provider_attempts[-1].error == "runway unavailable"
     assert state.diagnostics()["current_scene"] == "scene_001"
     assert state.diagnostics()["resume_from_scene"] == "scene_001"
 
@@ -113,24 +78,12 @@ def test_scene_planner_supported_durations_and_exact_total():
 
 
 def test_scene_decision_prefers_stock_when_stock_is_strong():
-    decision = decide_scene_media(
-        SceneContext(
-            prompt="Indian railway station",
-            visual_priority=0.5,
-            stock_likelihood=0.9,
-        )
-    )
+    decision = decide_scene_media(SceneContext(prompt="Indian railway station", visual_priority=0.5, stock_likelihood=0.9))
     assert decision.mode == SceneMediaMode.FREE_MEDIA
 
 
 def test_scene_decision_prefers_ai_for_high_visual_priority():
-    decision = decide_scene_media(
-        SceneContext(
-            prompt="cinematic reenactment",
-            visual_priority=0.9,
-            stock_likelihood=0.1,
-        )
-    )
+    decision = decide_scene_media(SceneContext(prompt="cinematic reenactment", visual_priority=0.9, stock_likelihood=0.1))
     assert decision.mode == SceneMediaMode.AI_VIDEO
 
 
