@@ -71,10 +71,12 @@ class ElevenLabsProvider:
         }
         payload = {"text": text, "model_id": model_id}
         endpoint = f"{self.TTS_ENDPOINT}/{voice_id}"
-        params = {
-            "output_format": output_format,
-            "language_code": language,
-        }
+        params = {"output_format": output_format}
+        # eleven_multilingual_v2 determines language from the supplied text.
+        # Do not send language_code for this model because the official API
+        # does not support that parameter with multilingual_v2.
+        if model_id != self.DEFAULT_MODEL:
+            params["language_code"] = language
 
         try:
             logger.info(
