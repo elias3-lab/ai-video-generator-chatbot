@@ -25,8 +25,6 @@ class ProviderRegistry:
         self._register()
 
     def _register(self) -> None:
-        # Factories are wrapped so a missing/invalid credential only fails the
-        # current provider attempt and allows the fallback chain to continue.
         self.engine.register("minimax", self._minimax)
         self.engine.register("runway", self._runway)
         self.engine.register("free_media", self._free_media)
@@ -34,27 +32,34 @@ class ProviderRegistry:
     def _minimax(self, *, scene: Any) -> SceneResult:
         provider = MiniMaxProvider()
         output = Path("outputs") / f"{scene.scene_id}_minimax.mp4"
-        path = provider.generate_and_download(scene.visual_prompt or scene.prompt or scene.scene_id, output)
+        result = provider.generate_and_download(
+            scene.visual_prompt or scene.prompt or scene.scene_id,
+            str(output),
+            duration=10 if getattr(scene, "target_duration", 10) >= 10 else 6,
+        )
         return SceneResult(
-            output_path=str(path),
+            output_path=result["output_path"],
             media_mode="ai_video",
             provider="minimax",
         )
 
     def _runway(self, *, scene: Any) -> SceneResult:
         provider = RunwayProvider()
-        prompt = scene.visual_prompt or scene.prompt or scene.scene_id
-        # Runway's adapter currently performs image-to-video, so this operation
-        # expects a scene-provided input image path when the adapter is used.
-        image_path = getattr(scene, "image_path", None)
-        if not image_path:
-            raise RuntimeError("Runway fallback requires a scene image_path")
         output = Path("outputs") / f"{scene.scene_id}_runway.mp4"
-        task_id = provider.generate_video(image_path, prompt)
-        result = provider.wait_for_completion(task_id)
-        provider.download_video(result, output)
-        provider.validate_video(output)
-        return SceneResult(output_path=str(output), media_mode="ai_video", provider="runway")
+        duration = max(2, min(10, int(getattr(scene, "target_duration", 5))))
+        task_id = provider.generate_video(
+            scene.visual_prompt or scene.prompt or scene.scene_id,
+            ratio="1280:720",
+            duration=duration,
+        )
+        output_url = provider.wait_for_completion(task_id)
+        provider.download_video(output_url, str(output))
+        provider.validate_video(str(output))
+        return SceneResult(
+            output_path=str(output),
+            media_mode="ai_video",
+            provider="runway",
+        )
 
     def _free_media(self, *, scene: Any) -> SceneResult:
         query = scene.prompt or scene.scene_id
