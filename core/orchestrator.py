@@ -94,8 +94,8 @@ class PipelineOrchestrator:
                         self.checkpoints.save(state)
                         try:
                             result = provider_executor(scene, provider)
-                        except Exception:
-                            state.record_provider_attempt(scene.scene_id, provider, False, error="provider execution failed")
+                        except Exception as exc:
+                            state.record_provider_attempt(scene.scene_id, provider, False, error=str(exc))
                             self.checkpoints.save(state)
                             raise
                         state.record_provider_attempt(scene.scene_id, provider, True)
@@ -111,8 +111,8 @@ class PipelineOrchestrator:
                         self.checkpoints.save(state)
                         try:
                             result = self.provider_engine.operations[provider](scene=scene)
-                        except Exception:
-                            state.record_provider_attempt(scene.scene_id, provider, False, error="provider execution failed")
+                        except Exception as exc:
+                            state.record_provider_attempt(scene.scene_id, provider, False, error=str(exc))
                             self.checkpoints.save(state)
                             raise
                         state.record_provider_attempt(scene.scene_id, provider, True)
