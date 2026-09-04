@@ -13,14 +13,6 @@ class APIClient:
     """Base API client with common functionality."""
 
     def __init__(self, api_key: str, base_url: str, timeout: Optional[int] = None):
-        """
-        Initialize API client.
-
-        Args:
-            api_key: API authentication key
-            base_url: API base URL
-            timeout: Request timeout in seconds
-        """
         self.api_key = api_key
         self.base_url = base_url
         self.timeout = timeout or settings.request_timeout_seconds
@@ -36,26 +28,7 @@ class APIClient:
         files: Optional[Dict[str, Any]] = None,
         params: Optional[Dict[str, Any]] = None,
     ) -> requests.Response:
-        """
-        Make HTTP request to API.
-
-        Args:
-            method: HTTP method (GET, POST, etc.)
-            endpoint: API endpoint path
-            headers: Request headers
-            data: Form data
-            json: JSON body
-            files: Files for multipart upload
-            params: Query parameters
-
-        Returns:
-            Response object
-
-        Raises:
-            APIError: If request fails
-        """
         url = f"{self.base_url}{endpoint}"
-
         try:
             response = self.session.request(
                 method=method,
@@ -67,17 +40,12 @@ class APIClient:
                 params=params,
                 timeout=self.timeout,
             )
-
             logger.debug(f"{method} {url} -> {response.status_code}")
-
-            # Check for HTTP errors
             if response.status_code >= 400:
                 error_msg = f"API Error {response.status_code}: {response.text[:200]}"
                 logger.error(error_msg)
                 raise APIError(error_msg)
-
             return response
-
         except requests.Timeout as e:
             error_msg = f"Request timeout for {method} {endpoint}"
             logger.error(error_msg)
@@ -107,6 +75,7 @@ class APIClient:
         data: Optional[Dict[str, Any]] = None,
         json: Optional[Dict[str, Any]] = None,
         files: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
     ) -> requests.Response:
         """Make POST request."""
         return self._make_request(
@@ -116,6 +85,7 @@ class APIClient:
             data=data,
             json=json,
             files=files,
+            params=params,
         )
 
     def close(self):
