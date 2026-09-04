@@ -96,12 +96,15 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
     project_id = f"castelou-{uuid.uuid4().hex[:10]}"
     registry = ProviderRegistry()
     orchestrator = PipelineOrchestrator(provider_engine=registry.engine)
+    state = orchestrator.create_project(project_id, duration_seconds)
+    scene_order = {scene.scene_id: index for index, scene in enumerate(state.scenes, start=1)}
+    total_scenes = len(state.scenes)
 
     def scene_context(scene):
         director_prompt = DirectorPlanner.visual_prompt(
             prompt,
-            scene.order,
-            len(orchestrator.checkpoints.resume(project_id).scenes),
+            scene_order[scene.scene_id],
+            total_scenes,
             style,
             orchestrator.visual_dna.prompt_prefix(),
         )
@@ -111,7 +114,6 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
             visual_priority=0.8,
         )
 
-    state = orchestrator.create_project(project_id, duration_seconds)
     state = orchestrator.run(project_id, scene_context=scene_context)
     completed = [scene for scene in state.scenes if scene.status.value == "completed" and scene.output_path]
     if not completed:
