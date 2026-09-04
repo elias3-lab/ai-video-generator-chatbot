@@ -35,13 +35,7 @@ class AudioMixer:
     DUCKED_MUSIC_VOLUME = 0.06
 
     @staticmethod
-    def build_timeline(
-        *,
-        voice_over: Optional[str] = None,
-        music: Optional[str] = None,
-        sfx: Sequence[AudioClip] = (),
-        duration: Optional[float] = None,
-    ) -> AudioTimeline:
+    def build_timeline(*, voice_over: Optional[str] = None, music: Optional[str] = None, sfx: Sequence[AudioClip] = (), duration: Optional[float] = None) -> AudioTimeline:
         """Create a normalized project timeline from available audio assets."""
         voice = AudioClip(voice_over, volume=AudioMixer.VOICE_VOLUME, kind="voice") if voice_over else None
         music_clip = AudioClip(music, volume=AudioMixer.MUSIC_VOLUME, kind="music") if music else None
@@ -59,16 +53,8 @@ class AudioMixer:
         return AudioTimeline(voice, music_clip, normalized_sfx, duration)
 
     @staticmethod
-    def build_filter_complex(
-        timeline: AudioTimeline,
-        *,
-        input_offset: int = 0,
-    ) -> Tuple[str, str]:
-        """Return FFmpeg filter_complex and final audio label.
-
-        ``input_offset`` is the number of non-audio inputs that precede the
-        audio files. A video input therefore uses offset=1.
-        """
+    def build_filter_complex(timeline: AudioTimeline, *, input_offset: int = 0) -> Tuple[str, str]:
+        """Return FFmpeg filter_complex and final audio label."""
         clips: List[AudioClip] = []
         if timeline.voice_over:
             clips.append(timeline.voice_over)
@@ -79,6 +65,8 @@ class AudioMixer:
             raise ValueError("At least one audio clip is required")
         if input_offset < 0:
             raise ValueError("input_offset cannot be negative")
+        if timeline.duration is not None and timeline.duration <= 0:
+            raise ValueError("duration must be positive when provided")
 
         filters: List[str] = []
         labels: List[str] = []
@@ -87,11 +75,17 @@ class AudioMixer:
         for index, clip in enumerate(clips):
             input_index = index + input_offset
             label = f"a{index}"
-            chain = [f"aresample=48000"]
+            chain = ["aresample=48000"]
             volume = clip.volume
             if clip.kind == "music" and has_voice:
                 volume = AudioMixer.DUCKED_MUSIC_VOLUME
             chain.append(f"volume={volume:g}")
+            # Keep every generated audio layer inside the requested project
+            # duration. This prevents a long TTS/music asset from extending
+            # the final MP4 beyond the video timeline.
+            if timeline.duration is not None:
+                chain.append(f"atrim=duration={timeline.duration:g}")
+                chain.append("asetpts=PTS-STARTPTS")
             if clip.start > 0:
                 chain.append(f"adelay={int(round(clip.start * 1000))}:all=1")
             if clip.fade_in > 0:
@@ -107,12 +101,7 @@ class AudioMixer:
         return ";".join(filters), "[outa]"
 
     @staticmethod
-    def build_ffmpeg_command(
-        timeline: AudioTimeline,
-        output_path: str,
-        *,
-        video_path: Optional[str] = None,
-    ) -> List[str]:
+    def build_ffmpeg_command(timeline: AudioTimeline, output_path: str, *, video_path: Optional[str] = None) -> List[str]:
         """Build an FFmpeg command for audio-only or video+audio output."""
         clips: List[AudioClip] = []
         if timeline.voice_over:
@@ -129,12 +118,9 @@ class AudioMixer:
         for clip in clips:
             command += ["-i", clip.path]
 
-        filter_complex, final_label = AudioMixer.build_filter_complex(
-            timeline,
-            input_offset=1 if video_path else 0,
-        )
+        filter_complex, final_label = AudioMixer.build_filter_complex(timeline, input_offset=1 if video_path else 0)
         command += ["-filter_complex", filter_complex, "-map", final_label]
         if video_path:
             command += ["-map", "0:v:0", "-c:v", "copy"]
-        command += ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-y", output_path]
+        command += ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-shortest", "-y", output_path]
         return command
