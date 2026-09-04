@@ -16,8 +16,6 @@ class Settings(BaseSettings):
     minimax_api_key: str = Field(default="", alias="MINIMAX_API_KEY")
     minimax_group_id: Optional[str] = Field(default=None, alias="MINIMAX_GROUP_ID")
     runway_api_key: str = Field(default="", alias="RUNWAY_API_KEY")
-    elevenlabs_api_key: str = Field(default="local", alias="ELEVENLABS_API_KEY")
-    elevenlabs_voice_id: Optional[str] = Field(default="af_sarah", alias="ELEVENLABS_VOICE_ID")
     pexels_api_key: str = Field(default="", alias="PEXELS_API_KEY")
     pixabay_api_key: str = Field(default="", alias="PIXABAY_API_KEY")
 
@@ -53,7 +51,6 @@ class Settings(BaseSettings):
     # Provider Limits
     minimax_max_duration: int = Field(default=60, alias="MINIMAX_MAX_DURATION")
     runway_max_duration: int = Field(default=60, alias="RUNWAY_MAX_DURATION")
-    elevenlabs_max_chars: int = Field(default=5000, alias="ELEVENLABS_MAX_CHARS")
 
     # Polling Configuration
     polling_interval_seconds: int = Field(default=5, alias="POLLING_INTERVAL_SECONDS")
