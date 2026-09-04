@@ -4,18 +4,20 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional
 
 from .project_state import ProjectState
+
+
+STORAGE_ROOT = Path(os.getenv("STORAGE_ROOT", ".")).expanduser()
 
 
 class CheckpointStore:
     """Save and load project checkpoints as JSON files."""
 
     def __init__(self, root_dir: str | Path | None = None) -> None:
-        # On Render, STORAGE_ROOT points at the Persistent Disk. Locally this
-        # remains the repository's projects/ directory.
-        self.root_dir = Path(root_dir or os.getenv("PROJECTS_DIR", "projects")).expanduser()
+        # On Render, STORAGE_ROOT can point at persistent storage.
+        # Locally this defaults to ./projects.
+        self.root_dir = Path(root_dir).expanduser() if root_dir else STORAGE_ROOT / "projects"
         self.root_dir.mkdir(parents=True, exist_ok=True)
 
     def path_for(self, project_id: str) -> Path:
