@@ -50,7 +50,7 @@ class ProviderRegistry:
         duration = max(2, min(10, int(getattr(scene, "target_duration", 5))))
         task_id = provider.generate_video(
             scene.visual_prompt or scene.prompt or scene.scene_id,
-            ratio="1280:720",
+            ratio="1280:768",
             duration=duration,
         )
         output_url = provider.wait_for_completion(task_id)
