@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import re
 import uuid
 
 import gradio as gr
@@ -76,6 +77,14 @@ def _generate_voice_over(prompt: str, content_type: str, scenes, output_path: st
     return str(output), status, measured_segments
 
 
+def _sanitize_error(value: object) -> str:
+    """Keep diagnostics useful while never exposing credentials or huge traces."""
+    text = str(value or "").replace("\\n", " ").replace("\n", " ").strip()
+    text = re.sub(r"(?i)(api[_-]?key|token|authorization|bearer|secret|password)=?[^\s,;]+", r"\1=[REDACTED]", text)
+    text = re.sub(r"(?i)([?&](?:key|token|api_key)=)[^&\s]+", r"\1[REDACTED]", text)
+    return text[:700]
+
+
 def _failure_reason(state) -> str:
     if state.failure_reason:
         return state.failure_reason
@@ -83,6 +92,45 @@ def _failure_reason(state) -> str:
         if scene.error_message:
             return scene.error_message
     return "No scene completed."
+
+
+def _diagnostic_report(state, duration_label: str, content_type: str, video_format: str) -> str:
+    completed = sum(scene.status.value == "completed" for scene in state.scenes)
+    current = state.current_scene or state.resume_from_scene or "unknown"
+    report = [
+        "VIDEO GENERATION PAUSED",
+        "",
+        f"Progress: {completed}/{len(state.scenes)} scenes completed",
+        f"Current scene: {current}",
+        f"Stage: {state.current_stage or 'unknown'}",
+        f"Requested: {duration_label} | {content_type} | {video_format}",
+        "",
+        "PROVIDER ATTEMPTS:",
+    ]
+    scene = None
+    for candidate in reversed(state.scenes):
+        if candidate.scene_id == current or candidate.error_message or candidate.provider_attempts:
+            scene = candidate
+            if candidate.error_message:
+                break
+    attempts = scene.provider_attempts if scene else []
+    if attempts:
+        for attempt in attempts:
+            status = "OK" if attempt.success else "FAILED"
+            detail = f" — {_sanitize_error(attempt.error)}" if attempt.error else ""
+            report.append(f"• {attempt.provider}: {status}{detail}")
+    else:
+        report.append("• No provider attempt was recorded.")
+    if scene and scene.error_message:
+        report.extend(["", "FINAL ERROR:", _sanitize_error(scene.error_message)])
+    report.extend([
+        "",
+        f"Checkpoint: {'available' if state.resume_from_scene else 'not available'}",
+        f"Resume from: {state.resume_from_scene or 'none'}",
+        "",
+        "The pipeline stopped before final render because the current scene did not complete.",
+    ])
+    return "\n".join(report)
 
 
 def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_CONTENT_TYPE, video_format: str = DEFAULT_VIDEO_FORMAT):
@@ -117,10 +165,9 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
     state = orchestrator.run(project_id, scene_context=scene_context)
     completed = [scene for scene in state.scenes if scene.status.value == "completed" and scene.output_path]
     if len(completed) != len(state.scenes):
-        raise gr.Error(
-            f"VIDEO GENERATION PAUSED\n{_failure_reason(state)}\n\n"
-            f"Completed {len(completed)} / {len(state.scenes)} scenes. Resume from the saved checkpoint."
-        )
+        # Return the real checkpoint/provider diagnostics to the UI instead of
+        # throwing gr.Error, which hides the useful backend failure details.
+        return None, _diagnostic_report(state, duration_label, content_type, video_format)
     scene_paths = [scene.output_path for scene in completed if scene.output_path]
     output_dir = Path(settings.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -162,7 +209,7 @@ def build_ui() -> gr.Blocks:
             prompt = gr.Textbox(label="Prompt", placeholder="Tell me a story about...", lines=5, elem_id="prompt")
             create = gr.Button("CREATE VIDEO", variant="primary", elem_id="create")
         video = gr.Video(label="Final MP4", autoplay=False)
-        diagnostics = gr.Textbox(label="Pipeline Diagnostics", lines=9, interactive=False)
+        diagnostics = gr.Textbox(label="Pipeline Diagnostics", lines=16, interactive=False)
         create.click(fn=create_video, inputs=[prompt, duration, content_type, video_format], outputs=[video, diagnostics])
     return demo
 
