@@ -54,16 +54,8 @@ def _video_dimensions(video_format: str) -> tuple[int, int]:
 
 
 def _build_narration_text(prompt: str, content_type: str) -> str:
-    """Create the first-pass narration brief used by the TTS stage.
-
-    The project can later replace this deterministic brief with an LLM script
-    planner without changing the ElevenLabs or final-render interfaces.
-    """
-    prefix = (
-        "In this documentary, we explore "
-        if content_type == "Documentary"
-        else "This cinematic story follows "
-    )
+    """Create a first-pass narration brief for the TTS stage."""
+    prefix = "In this documentary, we explore " if content_type == "Documentary" else "This cinematic story follows "
     return f"{prefix}{prompt.strip()}"
 
 
@@ -74,14 +66,23 @@ def _generate_voice_over(prompt: str, content_type: str, output_path: str) -> tu
     if not settings.elevenlabs_voice_id:
         return None, "Voice-over: skipped (ELEVENLABS_VOICE_ID not configured)."
 
-    narration = _build_narration_text(prompt, content_type)
     provider = ElevenLabsProvider()
     provider.generate_voice_over(
-        narration,
+        _build_narration_text(prompt, content_type),
         output_path,
         language=settings.default_language,
     )
     return output_path, "Voice-over: generated with ElevenLabs."
+
+
+def _failure_reason(state) -> str:
+    """Return the most useful persisted failure message without assuming scene indexing."""
+    if state.failure_reason:
+        return state.failure_reason
+    for scene in reversed(state.scenes):
+        if scene.error_message:
+            return scene.error_message
+    return "No scene completed."
 
 
 def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_CONTENT_TYPE, video_format: str = DEFAULT_VIDEO_FORMAT):
@@ -109,8 +110,7 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
 
     completed = [scene for scene in state.scenes if scene.status.value == "completed" and scene.output_path]
     if not completed:
-        reason = state.scenes[state.resume_from_scene - 1].failure_reason if state.scenes and state.resume_from_scene else "No scene completed."
-        raise gr.Error(f"VIDEO GENERATION PAUSED\n{reason or 'No scene completed.'}")
+        raise gr.Error(f"VIDEO GENERATION PAUSED\n{_failure_reason(state)}")
 
     scene_paths = [scene.output_path for scene in completed if scene.output_path]
     output_dir = Path(settings.output_dir)
@@ -171,29 +171,16 @@ def build_ui() -> gr.Blocks:
         with gr.Group(elem_classes=["castelou-card"]):
             gr.Markdown("### Type")
             content_type = gr.Radio(list(CONTENT_TYPES), value=DEFAULT_CONTENT_TYPE, label=None, interactive=True)
-
             gr.Markdown("### Duration")
             duration = gr.Radio(list(DURATION_OPTIONS.keys()), value=DEFAULT_DURATION, label=None, interactive=True)
-
             gr.Markdown("### Format")
             video_format = gr.Radio(list(VIDEO_FORMATS), value=DEFAULT_VIDEO_FORMAT, label=None, interactive=True)
-
-            prompt = gr.Textbox(
-                label="Prompt",
-                placeholder="Tell me a story about...",
-                lines=5,
-                elem_id="prompt",
-            )
+            prompt = gr.Textbox(label="Prompt", placeholder="Tell me a story about...", lines=5, elem_id="prompt")
             create = gr.Button("CREATE VIDEO", variant="primary", elem_id="create")
 
         video = gr.Video(label="Final MP4", autoplay=False)
         diagnostics = gr.Textbox(label="Pipeline Diagnostics", lines=9, interactive=False)
-
-        create.click(
-            fn=create_video,
-            inputs=[prompt, duration, content_type, video_format],
-            outputs=[video, diagnostics],
-        )
+        create.click(fn=create_video, inputs=[prompt, duration, content_type, video_format], outputs=[video, diagnostics])
 
     return demo
 
