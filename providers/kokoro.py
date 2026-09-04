@@ -18,7 +18,7 @@ class KokoroProvider:
 
     MODEL_PATH = Path("/app/models/kokoro-v1.0.int8.onnx")
     VOICES_PATH = Path("/app/models/voices-v1.0.bin")
-    DEFAULT_VOICE = "af_sarah"
+    DEFAULT_VOICE = "am_michael"
     DEFAULT_LANGUAGE = "en-us"
     DEFAULT_SPEED = 1.0
 
