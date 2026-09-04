@@ -8,6 +8,7 @@ import uuid
 import gradio as gr
 
 from config import settings
+from core.audio_plan import AudioPlanner
 from core.final_render import FinalRenderer
 from core.narration import NarrationPlanner
 from core.orchestrator import PipelineOrchestrator
@@ -71,7 +72,7 @@ def _failure_reason(state) -> str:
 
 
 def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_CONTENT_TYPE, video_format: str = DEFAULT_VIDEO_FORMAT):
-    """Run the pipeline, generate scene-aware voice-over, and render the final MP4."""
+    """Run the pipeline, generate scene-aware audio, and render the final MP4."""
     prompt = (prompt or "").strip()
     if not prompt:
         raise gr.Error("Tell CASTELOU what story to create first.")
@@ -101,6 +102,13 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
     voice_over_path, voice_status = _generate_voice_over(
         prompt, content_type, completed, str(output_dir / f"{project_id}_voice.mp3")
     )
+
+    # Build the semantic audio timeline now; real assets can be supplied later
+    # without changing the orchestration contract.
+    audio_cues = AudioPlanner.build_cues(completed, content_type=content_type)
+    music_cues = AudioPlanner.music_cues(audio_cues)
+    sfx_cues = AudioPlanner.sfx_cues(audio_cues)
+
     output_path = output_dir / f"{project_id}.mp4"
     final_path = FinalRenderer.render(
         scene_paths, str(output_path), voice_over=voice_over_path,
@@ -112,6 +120,7 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
         f"Resume point: {state.resume_from_scene}\n"
         f"Type: {content_type}\n"
         f"Format: {video_format} ({width}x{height})\n"
+        f"Audio plan: {len(music_cues)} music cues + {len(sfx_cues)} SFX cues\n"
         f"{voice_status}\n"
         f"Project: {project_id}"
     )
