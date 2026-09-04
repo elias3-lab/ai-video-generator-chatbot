@@ -14,7 +14,7 @@ from core.audio_plan import AudioPlanner
 from core.cinematic_audio import CinematicAudioGenerator
 from core.director import DirectorPlanner
 from core.final_render import FinalRenderer
-from core.job_manager import get_video_job, start_video_job
+from core.job_manager import get_video_job, list_video_jobs, start_video_job
 from core.narration import NarrationAudioSegment, NarrationPlanner, concatenate_audio_segments, probe_audio_duration
 from core.orchestrator import PipelineOrchestrator
 from core.subtitles import SubtitlePlanner
@@ -109,20 +109,18 @@ def _diagnostic_report(state, duration_label: str, content_type: str, video_form
     return "\n".join(report)
 
 
-def _create_video_sync(prompt: str, duration_label: str, content_type: str, video_format: str, progress=None):
-    prompt = (prompt or "").strip()
+def _run_project(project_id: str, prompt: str, duration_label: str, content_type: str, video_format: str, progress=None):
     duration_seconds = _duration_seconds(duration_label)
     style = _content_style(content_type)
     width, height = _video_dimensions(video_format)
-    project_id = f"castelou-{uuid.uuid4().hex[:10]}"
     registry = ProviderRegistry()
     orchestrator = PipelineOrchestrator(provider_engine=registry.engine)
-    state = orchestrator.create_project(project_id, duration_seconds)
-    total_scenes = len(state.scenes)
+    existing = orchestrator.checkpoints.load(project_id)
+    total_scenes = len(existing.scenes)
+    scene_order = {scene.scene_id: index for index, scene in enumerate(existing.scenes, start=1)}
     if progress:
-        progress(phase="Planning", progress=5, scenes_completed=0, total_scenes=total_scenes, diagnostics=f"Planning {total_scenes} scenes...")
-
-    scene_order = {scene.scene_id: index for index, scene in enumerate(state.scenes, start=1)}
+        completed_now = sum(scene.status.value == "completed" for scene in existing.scenes)
+        progress(phase="Resume", progress=min(50, 5 + completed_now * 45 // max(1, total_scenes)), scenes_completed=completed_now, total_scenes=total_scenes, diagnostics=f"Resuming project {project_id} from checkpoint...")
 
     def scene_context(scene):
         director_prompt = DirectorPlanner.visual_prompt(prompt, scene_order[scene.scene_id], total_scenes, style, orchestrator.visual_dna.prompt_prefix())
@@ -160,12 +158,41 @@ def _create_video_sync(prompt: str, duration_label: str, content_type: str, vide
     return final_path, diagnostics
 
 
+def _create_video_sync(prompt: str, duration_label: str, content_type: str, video_format: str, progress=None):
+    project_id = f"castelou-{uuid.uuid4().hex[:10]}"
+    registry = ProviderRegistry()
+    orchestrator = PipelineOrchestrator(provider_engine=registry.engine)
+    orchestrator.create_project(project_id, _duration_seconds(duration_label))
+    return _run_project(project_id, prompt, duration_label, content_type, video_format, progress)
+
+
 def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_CONTENT_TYPE, video_format: str = DEFAULT_VIDEO_FORMAT):
     prompt = (prompt or "").strip()
     if not prompt:
         raise gr.Error("Tell CASTELOU what story to create first.")
-    job_id = start_video_job(lambda progress: _create_video_sync(prompt, duration_label, content_type, video_format, progress))
-    return None, f"Job queued: {job_id}\n\nProcessing on the Render server. You can close the phone while generation continues.\n\nOpen CHECK JOB later to see live phase and progress.", None
+    project_id = f"castelou-{uuid.uuid4().hex[:10]}"
+    job_id = start_video_job(lambda progress: _run_project(project_id, prompt, duration_label, content_type, video_format, progress), project_id=project_id)
+    return None, f"Job queued: {job_id}\nProject: {project_id}\n\nProcessing on the Render server. You can close the phone while generation continues.\n\nOpen CHECK JOB later.", None
+
+
+def resume_video(job_id: str):
+    job = get_video_job((job_id or "").strip())
+    if job.status == "missing":
+        raise gr.Error("Job not found on this server.")
+    if not job.project_id:
+        raise gr.Error("This job has no resumable project ID.")
+    project_id = job.project_id
+    try:
+        state = PipelineOrchestrator().checkpoints.load(project_id)
+    except Exception as exc:
+        raise gr.Error(f"Checkpoint unavailable: {_sanitize_error(exc)}")
+    # Reuse the original job's stored project checkpoint. Prompt/options are recovered from checkpoint only where available;
+    # for legacy jobs without them, resume is limited to the existing scene state.
+    prompt = next((scene.prompt for scene in state.scenes if scene.prompt), "Continue the saved project from its checkpoint.")
+    duration_seconds = sum(scene.target_duration or 0 for scene in state.scenes) or 180
+    duration_label = min(DURATION_OPTIONS, key=lambda label: abs(DURATION_OPTIONS[label] - duration_seconds))
+    new_job_id = start_video_job(lambda progress: _run_project(project_id, prompt, duration_label, DEFAULT_CONTENT_TYPE, DEFAULT_VIDEO_FORMAT, progress), project_id=project_id)
+    return f"Resume started. Job: {new_job_id}\nProject: {project_id}"
 
 
 def _format_job(job) -> str:
@@ -195,6 +222,13 @@ def check_video_job(job_id: str):
     return None, _format_job(job), None
 
 
+def recent_resumable_jobs():
+    jobs = [job for job in list_video_jobs(20) if job.project_id and job.status in {"failed", "queued", "running"}]
+    if not jobs:
+        return "No resumable jobs found on this server instance."
+    return "\n".join(f"Job: {job.job_id} | Project: {job.project_id} | {job.status.upper()} | {job.phase} | {job.progress}%" for job in jobs)
+
+
 CSS = """
 :root { --castelou-gold: #b9975b; --castelou-bg: #0b0b0d; }
 .gradio-container { max-width: 1100px !important; background: var(--castelou-bg) !important; }
@@ -203,7 +237,7 @@ CSS = """
 .castelou-title p { opacity: .65; letter-spacing: .08em; }
 .castelou-card { border: 1px solid rgba(185,151,91,.22); border-radius: 18px; padding: 22px; background: rgba(255,255,255,.025); }
 #prompt textarea { min-height: 150px; }
-#create button { border-radius: 14px; font-weight: 700; letter-spacing: .04em; }
+#create button, #resume button { border-radius: 14px; font-weight: 700; letter-spacing: .04em; }
 """
 
 
@@ -225,7 +259,11 @@ def build_ui() -> gr.Blocks:
         create.click(fn=create_video, inputs=[prompt, duration, content_type, video_format], outputs=[video, diagnostics, download])
         job_id = gr.Textbox(label="Job ID", interactive=True, placeholder="Paste the Job ID returned after starting a video")
         check = gr.Button("CHECK JOB")
+        resume = gr.Button("RESUME VIDEO", variant="secondary", elem_id="resume")
+        resumable = gr.Textbox(label="Resumable Jobs", lines=5, interactive=False)
         check.click(fn=check_video_job, inputs=[job_id], outputs=[video, diagnostics, download])
+        resume.click(fn=resume_video, inputs=[job_id], outputs=[diagnostics])
+        demo.load(fn=recent_resumable_jobs, inputs=None, outputs=[resumable])
     return demo
 
 
