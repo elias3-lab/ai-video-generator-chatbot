@@ -88,13 +88,16 @@ class Settings(BaseSettings):
             raise ValueError("DEFAULT_LANGUAGE must be one of: en, ar, fr, de")
         return v
 
-    @validator("voice_over_volume", "background_music_volume", "kokoro_speed")
-    def validate_audio_values(cls, v, values=None):
-        if "kokoro_speed" in str(values):
-            if v <= 0:
-                raise ValueError("KOKORO_SPEED must be positive")
-        elif not 0 <= v <= 1:
+    @validator("voice_over_volume", "background_music_volume")
+    def validate_volume(cls, v):
+        if not 0 <= v <= 1:
             raise ValueError(f"Volume must be between 0 and 1, got: {v}")
+        return v
+
+    @validator("kokoro_speed")
+    def validate_kokoro_speed(cls, v):
+        if not 0.5 <= v <= 2.0:
+            raise ValueError(f"KOKORO_SPEED must be between 0.5 and 2.0, got: {v}")
         return v
 
     def ensure_directories(self):
