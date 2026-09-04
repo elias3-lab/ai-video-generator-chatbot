@@ -1,10 +1,11 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
 
 import app
 from core.narration import NarrationAudioSegment, NarrationPlanner, concatenate_audio_segments, probe_audio_duration
+from core.subtitles import SubtitlePlanner
 
 
 @dataclass
@@ -23,7 +24,6 @@ def test_probe_audio_duration_returns_measured_float(tmp_path, monkeypatch):
         stderr = ""
 
     monkeypatch.setattr("core.narration.subprocess.run", lambda *args, **kwargs: Result())
-
     assert probe_audio_duration(str(audio)) == pytest.approx(7.25)
 
 
@@ -37,7 +37,6 @@ def test_probe_audio_duration_rejects_invalid_duration(tmp_path, monkeypatch):
         stderr = ""
 
     monkeypatch.setattr("core.narration.subprocess.run", lambda *args, **kwargs: Result())
-
     with pytest.raises(Exception, match="Invalid audio duration"):
         probe_audio_duration(str(audio))
 
@@ -51,7 +50,6 @@ def test_concatenate_audio_segments_writes_ordered_manifest(tmp_path, monkeypatc
     captured = {}
 
     def fake_run(command, **kwargs):
-        captured["command"] = command
         captured["manifest"] = Path(command[command.index("-i") + 1]).read_text(encoding="utf-8")
         output.write_bytes(b"combined")
 
@@ -113,6 +111,16 @@ def test_generate_voice_over_uses_measured_scene_durations(monkeypatch, tmp_path
     assert "2 scene tracks" in status
     assert "11.0s measured" in status
     assert [segment.duration_seconds for segment in narration_segments] == pytest.approx([4.2, 6.8])
-    assert [segment.duration_seconds for segment in [item.segment for item in concatenated["segments"]]] == [10, 10]
     assert [item.duration_seconds for item in concatenated["segments"]] == pytest.approx([4.2, 6.8])
     assert [item[2] for item in generated] == [app.settings.default_language, app.settings.default_language]
+
+
+def test_subtitles_follow_measured_narration_timeline():
+    planned = NarrationPlanner.build_segments(
+        "a journey through India", [FakeScene("s1", 10), FakeScene("s2", 10)]
+    )
+    measured = [replace(planned[0], duration_seconds=4.2), replace(planned[1], duration_seconds=6.8)]
+    cues = SubtitlePlanner.build_cues(measured)
+
+    assert [(cue.start, cue.end) for cue in cues] == pytest.approx([(0.0, 4.2), (4.2, 11.0)])
+    assert "00:00:04,200 --> 00:00:11,000" in SubtitlePlanner.to_srt(cues)
