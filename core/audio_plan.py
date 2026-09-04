@@ -26,6 +26,19 @@ class AudioPlanner:
     """Create stable music/SFX cues from the existing scene timeline."""
 
     @staticmethod
+    def _scene_duration(scene: ScenePlan) -> float:
+        """Read the canonical scene duration while supporting measured runtime values."""
+        value = getattr(scene, "duration_seconds", None)
+        if value is None:
+            value = getattr(scene, "target_duration", None)
+        if value is None:
+            raise ValueError(f"Scene {getattr(scene, 'scene_id', 'unknown')} has no duration")
+        duration = float(value)
+        if duration <= 0:
+            raise ValueError(f"Scene {getattr(scene, 'scene_id', 'unknown')} has invalid duration: {duration}")
+        return duration
+
+    @staticmethod
     def build_cues(scenes: Sequence[ScenePlan], *, content_type: str = "Documentary") -> list[AudioCue]:
         if not scenes:
             raise ValueError("At least one scene is required")
@@ -36,6 +49,7 @@ class AudioPlanner:
         cursor = 0.0
         last_index = len(scenes) - 1
         for index, scene in enumerate(scenes):
+            duration = AudioPlanner._scene_duration(scene)
             if index == 0:
                 mood = "curious" if content_type == "Documentary" else "anticipation"
                 description = "opening atmosphere"
@@ -50,7 +64,7 @@ class AudioPlanner:
                 AudioCue(
                     scene_id=scene.scene_id,
                     start=cursor,
-                    duration=float(scene.duration_seconds),
+                    duration=duration,
                     kind="music",
                     mood=mood,
                     description=description,
@@ -62,14 +76,14 @@ class AudioPlanner:
                     AudioCue(
                         scene_id=scene.scene_id,
                         start=cursor,
-                        duration=min(1.5, float(scene.duration_seconds)),
+                        duration=min(1.5, duration),
                         kind="sfx",
                         mood=mood,
                         description="subtle scene transition",
                         volume=0.55,
                     )
                 )
-            cursor += float(scene.duration_seconds)
+            cursor += duration
         return cues
 
     @staticmethod
