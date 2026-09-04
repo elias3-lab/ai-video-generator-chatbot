@@ -7,6 +7,7 @@ import uuid
 
 import gradio as gr
 
+from config import settings
 from core.final_render import FinalRenderer
 from core.orchestrator import PipelineOrchestrator
 from core.project_state import ProjectStatus
@@ -80,7 +81,7 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
         raise gr.Error(f"VIDEO GENERATION PAUSED\n{reason or 'No scene completed.'}")
 
     scene_paths = [scene.output_path for scene in completed if scene.output_path]
-    output_path = Path("outputs") / f"{project_id}.mp4"
+    output_path = Path(settings.output_dir) / f"{project_id}.mp4"
     final_path = FinalRenderer.render(scene_paths, str(output_path), width=width, height=height)
 
     diagnostics = (
