@@ -24,6 +24,11 @@ class ProviderRegistry:
         self.engine = ProviderEngine()
         self._register()
 
+    def _output_path(self, filename: str) -> Path:
+        output_dir = Path(settings.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir / filename
+
     def _register(self) -> None:
         self.engine.register("minimax", self._minimax)
         self.engine.register("runway", self._runway)
@@ -31,7 +36,7 @@ class ProviderRegistry:
 
     def _minimax(self, *, scene: Any) -> SceneResult:
         provider = MiniMaxProvider()
-        output = Path("outputs") / f"{scene.scene_id}_minimax.mp4"
+        output = self._output_path(f"{scene.scene_id}_minimax.mp4")
         result = provider.generate_and_download(
             scene.visual_prompt or scene.prompt or scene.scene_id,
             str(output),
@@ -41,9 +46,13 @@ class ProviderRegistry:
 
     def _runway(self, *, scene: Any) -> SceneResult:
         provider = RunwayProvider()
-        output = Path("outputs") / f"{scene.scene_id}_runway.mp4"
+        output = self._output_path(f"{scene.scene_id}_runway.mp4")
         duration = max(2, min(10, int(getattr(scene, "target_duration", 5))))
-        task_id = provider.generate_video(scene.visual_prompt or scene.prompt or scene.scene_id, ratio="1280:720", duration=duration)
+        task_id = provider.generate_video(
+            scene.visual_prompt or scene.prompt or scene.scene_id,
+            ratio="1280:720",
+            duration=duration,
+        )
         output_url = provider.wait_for_completion(task_id)
         provider.download_video(output_url, str(output))
         provider.validate_video(str(output))
@@ -51,8 +60,10 @@ class ProviderRegistry:
 
     def _free_media(self, *, scene: Any) -> SceneResult:
         query = scene.prompt or scene.scene_id
-        output = Path("outputs") / f"{scene.scene_id}_stock.mp4"
-        asset, path = self.media_search.search_and_download(query, output, target_duration=getattr(scene, "target_duration", None))
+        output = self._output_path(f"{scene.scene_id}_stock.mp4")
+        asset, path = self.media_search.search_and_download(
+            query, output, target_duration=getattr(scene, "target_duration", None)
+        )
         return SceneResult(
             output_path=path,
             asset_id=asset.asset_id,
