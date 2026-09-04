@@ -9,18 +9,14 @@ import gradio as gr
 
 from config import settings
 from core.final_render import FinalRenderer
+from core.narration import NarrationPlanner
 from core.orchestrator import PipelineOrchestrator
 from core.project_state import ProjectStatus
 from providers.elevenlabs import ElevenLabsProvider
 from providers.registry import ProviderRegistry
 from core.scene_decision import SceneContext
 
-DURATION_OPTIONS = {
-    "30s": 30,
-    "3 min": 180,
-    "4 min": 240,
-    "5 min": 300,
-}
+DURATION_OPTIONS = {"30s": 30, "3 min": 180, "4 min": 240, "5 min": 300}
 CONTENT_TYPES = ("Documentary", "Film")
 VIDEO_FORMATS = ("YouTube 16:9", "Shorts 9:16")
 DEFAULT_DURATION = "4 min"
@@ -53,30 +49,19 @@ def _video_dimensions(video_format: str) -> tuple[int, int]:
     raise ValueError("Unsupported video format. Choose YouTube 16:9 or Shorts 9:16.")
 
 
-def _build_narration_text(prompt: str, content_type: str) -> str:
-    """Create a first-pass narration brief for the TTS stage."""
-    prefix = "In this documentary, we explore " if content_type == "Documentary" else "This cinematic story follows "
-    return f"{prefix}{prompt.strip()}"
-
-
-def _generate_voice_over(prompt: str, content_type: str, output_path: str) -> tuple[str | None, str]:
-    """Generate voice-over when ElevenLabs is configured; otherwise continue without it."""
+def _generate_voice_over(prompt: str, content_type: str, scenes, output_path: str) -> tuple[str | None, str]:
+    """Generate one scene-aware narration track when ElevenLabs is configured."""
     if not settings.elevenlabs_api_key:
         return None, "Voice-over: skipped (ELEVENLABS_API_KEY not configured)."
     if not settings.elevenlabs_voice_id:
         return None, "Voice-over: skipped (ELEVENLABS_VOICE_ID not configured)."
-
-    provider = ElevenLabsProvider()
-    provider.generate_voice_over(
-        _build_narration_text(prompt, content_type),
-        output_path,
-        language=settings.default_language,
-    )
-    return output_path, "Voice-over: generated with ElevenLabs."
+    segments = NarrationPlanner.build_segments(prompt, scenes, content_type)
+    script = NarrationPlanner.join(segments)
+    ElevenLabsProvider().generate_voice_over(script, output_path, language=settings.default_language)
+    return output_path, f"Voice-over: generated with ElevenLabs ({len(segments)} scene segments)."
 
 
 def _failure_reason(state) -> str:
-    """Return the most useful persisted failure message without assuming scene indexing."""
     if state.failure_reason:
         return state.failure_reason
     for scene in reversed(state.scenes):
@@ -86,11 +71,10 @@ def _failure_reason(state) -> str:
 
 
 def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_CONTENT_TYPE, video_format: str = DEFAULT_VIDEO_FORMAT):
-    """Run the pipeline, generate voice-over, and render completed scenes into one MP4."""
+    """Run the pipeline, generate scene-aware voice-over, and render the final MP4."""
     prompt = (prompt or "").strip()
     if not prompt:
         raise gr.Error("Tell CASTELOU what story to create first.")
-
     duration_seconds = _duration_seconds(duration_label)
     style = _content_style(content_type)
     width, height = _video_dimensions(video_format)
@@ -107,7 +91,6 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
 
     state = orchestrator.create_project(project_id, duration_seconds)
     state = orchestrator.run(project_id, scene_context=scene_context)
-
     completed = [scene for scene in state.scenes if scene.status.value == "completed" and scene.output_path]
     if not completed:
         raise gr.Error(f"VIDEO GENERATION PAUSED\n{_failure_reason(state)}")
@@ -116,20 +99,13 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
     output_dir = Path(settings.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     voice_over_path, voice_status = _generate_voice_over(
-        prompt,
-        content_type,
-        str(output_dir / f"{project_id}_voice.mp3"),
+        prompt, content_type, completed, str(output_dir / f"{project_id}_voice.mp3")
     )
     output_path = output_dir / f"{project_id}.mp4"
     final_path = FinalRenderer.render(
-        scene_paths,
-        str(output_path),
-        voice_over=voice_over_path,
-        duration=duration_seconds,
-        width=width,
-        height=height,
+        scene_paths, str(output_path), voice_over=voice_over_path,
+        duration=duration_seconds, width=width, height=height,
     )
-
     diagnostics = (
         f"Status: {state.status.value}\n"
         f"Completed: {len(completed)} / {len(state.scenes)} scenes\n"
@@ -141,7 +117,6 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
     )
     if state.status != ProjectStatus.COMPLETED:
         diagnostics += "\n\nRecovery: resume from the saved checkpoint."
-
     return final_path, diagnostics
 
 
@@ -159,15 +134,7 @@ CSS = """
 
 def build_ui() -> gr.Blocks:
     with gr.Blocks(title="CASTELOU AI DOCUMENTARY STUDIO", css=CSS) as demo:
-        gr.HTML(
-            """
-            <div class="castelou-title">
-              <h1>CASTELOU</h1>
-              <p>AI DOCUMENTARY STUDIO</p>
-            </div>
-            """
-        )
-
+        gr.HTML("""<div class="castelou-title"><h1>CASTELOU</h1><p>AI DOCUMENTARY STUDIO</p></div>""")
         with gr.Group(elem_classes=["castelou-card"]):
             gr.Markdown("### Type")
             content_type = gr.Radio(list(CONTENT_TYPES), value=DEFAULT_CONTENT_TYPE, label=None, interactive=True)
@@ -177,11 +144,9 @@ def build_ui() -> gr.Blocks:
             video_format = gr.Radio(list(VIDEO_FORMATS), value=DEFAULT_VIDEO_FORMAT, label=None, interactive=True)
             prompt = gr.Textbox(label="Prompt", placeholder="Tell me a story about...", lines=5, elem_id="prompt")
             create = gr.Button("CREATE VIDEO", variant="primary", elem_id="create")
-
         video = gr.Video(label="Final MP4", autoplay=False)
         diagnostics = gr.Textbox(label="Pipeline Diagnostics", lines=9, interactive=False)
         create.click(fn=create_video, inputs=[prompt, duration, content_type, video_format], outputs=[video, diagnostics])
-
     return demo
 
 
