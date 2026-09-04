@@ -8,6 +8,7 @@ from app import (
     _content_style,
     _duration_seconds,
     _video_dimensions,
+    _sanitize_error,
 )
 
 
@@ -40,3 +41,11 @@ def test_invalid_studio_options_fail_fast():
             pass
         else:
             raise AssertionError(f"{func.__name__} accepted invalid value")
+
+
+def test_sanitize_error_redacts_credentials():
+    value = "https://example.test/api?key=SECRET123&x=1 token=SECRET456"
+    safe = _sanitize_error(value)
+    assert "SECRET123" not in safe
+    assert "SECRET456" not in safe
+    assert "REDACTED" in safe
