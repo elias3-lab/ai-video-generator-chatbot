@@ -14,6 +14,7 @@ from core.audio_plan import AudioPlanner
 from core.cinematic_audio import CinematicAudioGenerator
 from core.director import DirectorPlanner
 from core.final_render import FinalRenderer
+from core.job_manager import get_video_job, start_video_job
 from core.narration import NarrationAudioSegment, NarrationPlanner, concatenate_audio_segments, probe_audio_duration
 from core.orchestrator import PipelineOrchestrator
 from core.subtitles import SubtitlePlanner
@@ -55,7 +56,6 @@ def _video_dimensions(video_format: str) -> tuple[int, int]:
 
 
 def _generate_voice_over(prompt: str, content_type: str, scenes, output_path: str) -> tuple[str | None, str, list]:
-    """Generate one local Kokoro TTS track per scene, measure durations, then concatenate in order."""
     planned = NarrationPlanner.build_segments(prompt, scenes, content_type)
     provider = KokoroProvider(voice=settings.kokoro_voice, speed=settings.kokoro_speed)
     output = Path(output_path)
@@ -63,11 +63,7 @@ def _generate_voice_over(prompt: str, content_type: str, scenes, output_path: st
     generated: list[NarrationAudioSegment] = []
     for segment in planned:
         scene_path = output.parent / f"{output.stem}_{segment.order:03d}.wav"
-        provider.generate_voice_over(
-            segment.text,
-            str(scene_path),
-            language=settings.default_language,
-        )
+        provider.generate_voice_over(segment.text, str(scene_path), language=settings.default_language)
         measured = probe_audio_duration(str(scene_path))
         generated.append(NarrationAudioSegment(segment, str(scene_path), measured))
     concatenate_audio_segments(generated, str(output))
@@ -78,7 +74,6 @@ def _generate_voice_over(prompt: str, content_type: str, scenes, output_path: st
 
 
 def _sanitize_error(value: object) -> str:
-    """Keep diagnostics useful while never exposing credentials or huge traces."""
     text = str(value or "").replace("\\n", " ").replace("\n", " ").strip()
     text = re.sub(r"(?i)(api[_-]?key|token|authorization|bearer|secret|password)=?[^\s,;]+", r"\1=[REDACTED]", text)
     text = re.sub(r"(?i)([?&](?:key|token|api_key)=)[^&\s]+", r"\1[REDACTED]", text)
@@ -88,16 +83,7 @@ def _sanitize_error(value: object) -> str:
 def _diagnostic_report(state, duration_label: str, content_type: str, video_format: str) -> str:
     completed = sum(scene.status.value == "completed" for scene in state.scenes)
     current = state.current_scene or state.resume_from_scene or "unknown"
-    report = [
-        "VIDEO GENERATION PAUSED",
-        "",
-        f"Progress: {completed}/{len(state.scenes)} scenes completed",
-        f"Current scene: {current}",
-        f"Stage: {state.current_stage or 'unknown'}",
-        f"Requested: {duration_label} | {content_type} | {video_format}",
-        "",
-        "PROVIDER ATTEMPTS:",
-    ]
+    report = ["VIDEO GENERATION PAUSED", "", f"Progress: {completed}/{len(state.scenes)} scenes completed", f"Current scene: {current}", f"Stage: {state.current_stage or 'unknown'}", f"Requested: {duration_label} | {content_type} | {video_format}", "", "PROVIDER ATTEMPTS:"]
     scene = None
     for candidate in reversed(state.scenes):
         if candidate.scene_id == current or candidate.error_message or candidate.provider_attempts:
@@ -114,21 +100,12 @@ def _diagnostic_report(state, duration_label: str, content_type: str, video_form
         report.append("• No provider attempt was recorded.")
     if scene and scene.error_message:
         report.extend(["", "FINAL ERROR:", _sanitize_error(scene.error_message)])
-    report.extend([
-        "",
-        f"Checkpoint: {'available' if state.resume_from_scene else 'not available'}",
-        f"Resume from: {state.resume_from_scene or 'none'}",
-        "",
-        "The pipeline stopped before final render because the current scene did not complete.",
-    ])
+    report.extend(["", f"Checkpoint: {'available' if state.resume_from_scene else 'not available'}", f"Resume from: {state.resume_from_scene or 'none'}", "", "The pipeline stopped before final render because the current scene did not complete."])
     return "\n".join(report)
 
 
-def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_CONTENT_TYPE, video_format: str = DEFAULT_VIDEO_FORMAT):
-    """Run the complete cinematic pipeline and produce a YouTube-ready MP4."""
+def _create_video_sync(prompt: str, duration_label: str, content_type: str, video_format: str):
     prompt = (prompt or "").strip()
-    if not prompt:
-        raise gr.Error("Tell CASTELOU what story to create first.")
     duration_seconds = _duration_seconds(duration_label)
     style = _content_style(content_type)
     width, height = _video_dimensions(video_format)
@@ -140,18 +117,8 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
     total_scenes = len(state.scenes)
 
     def scene_context(scene):
-        director_prompt = DirectorPlanner.visual_prompt(
-            prompt,
-            scene_order[scene.scene_id],
-            total_scenes,
-            style,
-            orchestrator.visual_dna.prompt_prefix(),
-        )
-        return SceneContext(
-            prompt=f"{director_prompt} Output format: {video_format}.",
-            consistency_required=True,
-            visual_priority=0.8,
-        )
+        director_prompt = DirectorPlanner.visual_prompt(prompt, scene_order[scene.scene_id], total_scenes, style, orchestrator.visual_dna.prompt_prefix())
+        return SceneContext(prompt=f"{director_prompt} Output format: {video_format}.", consistency_required=True, visual_priority=0.8)
 
     state = orchestrator.run(project_id, scene_context=scene_context)
     completed = [scene for scene in state.scenes if scene.status.value == "completed" and scene.output_path]
@@ -161,48 +128,37 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
     scene_paths = [scene.output_path for scene in completed if scene.output_path]
     output_dir = Path(settings.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-
     try:
-        voice_over_path, voice_status, narration_segments = _generate_voice_over(
-            prompt, content_type, completed, str(output_dir / f"{project_id}_voice.mp3")
-        )
+        voice_over_path, voice_status, narration_segments = _generate_voice_over(prompt, content_type, completed, str(output_dir / f"{project_id}_voice.mp3"))
         audio_cues = AudioPlanner.build_cues(completed, content_type=content_type)
         music_cues = AudioPlanner.music_cues(audio_cues)
         sfx_cues = AudioPlanner.sfx_cues(audio_cues)
-        music_path, generated_sfx = CinematicAudioGenerator.build_default_layers(
-            output_dir / project_id, duration_seconds, len(completed)
-        )
+        music_path, generated_sfx = CinematicAudioGenerator.build_default_layers(output_dir / project_id, duration_seconds, len(completed))
         subtitle_cues = SubtitlePlanner.build_cues(narration_segments)
         subtitles_path = output_dir / f"{project_id}.srt"
         subtitles_path.write_text(SubtitlePlanner.to_srt(subtitle_cues), encoding="utf-8")
         output_path = output_dir / f"{project_id}.mp4"
-        final_path = FinalRenderer.render(
-            scene_paths,
-            str(output_path),
-            voice_over=voice_over_path,
-            music=music_path,
-            sfx=generated_sfx,
-            duration=duration_seconds,
-            width=width,
-            height=height,
-            subtitles_path=str(subtitles_path),
-        )
+        final_path = FinalRenderer.render(scene_paths, str(output_path), voice_over=voice_over_path, music=music_path, sfx=generated_sfx, duration=duration_seconds, width=width, height=height, subtitles_path=str(subtitles_path))
     except Exception as exc:
         return None, f"FINAL RENDER FAILED\n\n{_sanitize_error(exc)}"
 
-    diagnostics = (
-        f"Status: {state.status.value}\n"
-        f"Completed: {len(completed)} / {len(state.scenes)} scenes\n"
-        f"Type: {content_type}\n"
-        f"Format: {video_format} ({width}x{height})\n"
-        "Director: Hook → Journey → Discovery → Ending\n"
-        f"Audio plan: {len(music_cues)} music cues + {len(sfx_cues)} SFX cues\n"
-        f"Generated audio: cinematic music + {len(generated_sfx)} transition SFX\n"
-        f"Subtitles: {len(subtitle_cues)} measured narration cues attached\n"
-        f"{voice_status}\n"
-        f"Project: {project_id}"
-    )
+    diagnostics = (f"Status: {state.status.value}\nCompleted: {len(completed)} / {len(state.scenes)} scenes\nType: {content_type}\nFormat: {video_format} ({width}x{height})\nDirector: Hook → Journey → Discovery → Ending\nAudio plan: {len(music_cues)} music cues + {len(sfx_cues)} SFX cues\nGenerated audio: cinematic music + {len(generated_sfx)} transition SFX\nSubtitles: {len(subtitle_cues)} measured narration cues attached\n{voice_status}\nProject: {project_id}")
     return final_path, diagnostics
+
+
+def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_CONTENT_TYPE, video_format: str = DEFAULT_VIDEO_FORMAT):
+    prompt = (prompt or "").strip()
+    if not prompt:
+        raise gr.Error("Tell CASTELOU what story to create first.")
+    job_id = start_video_job(lambda: _create_video_sync(prompt, duration_label, content_type, video_format))
+    return None, f"Job queued: {job_id}\n\nProcessing on the Render server. You can close the phone and reopen the app later to check the job."
+
+
+def check_video_job(job_id: str):
+    job = get_video_job((job_id or "").strip())
+    if job.status == "completed":
+        return job.video_path, f"Job {job.job_id}: COMPLETED\n\n{job.diagnostics}"
+    return None, f"Job {job.job_id}: {job.status.upper()}\n\n{job.diagnostics}"
 
 
 CSS = """
@@ -232,6 +188,9 @@ def build_ui() -> gr.Blocks:
         video = gr.Video(label="Final MP4", autoplay=False)
         diagnostics = gr.Textbox(label="Pipeline Diagnostics", lines=16, interactive=False)
         create.click(fn=create_video, inputs=[prompt, duration, content_type, video_format], outputs=[video, diagnostics])
+        job_id = gr.Textbox(label="Job ID", interactive=True, placeholder="Paste the Job ID returned after starting a video")
+        check = gr.Button("CHECK JOB")
+        check.click(fn=check_video_job, inputs=[job_id], outputs=[video, diagnostics])
     return demo
 
 
