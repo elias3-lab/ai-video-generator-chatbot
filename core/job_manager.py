@@ -1,4 +1,4 @@
-"""Server-side video job state with persisted progress metadata."""
+"""Server-side video job state with optional Dropbox persistence."""
 
 from __future__ import annotations
 
@@ -11,9 +11,8 @@ import os
 import time
 import uuid
 
+from .dropbox_storage import storage
 
-# Render Persistent Disk is mounted at /app/storage. Locally, keep the
-# repository-friendly checkpoints directory unless STORAGE_ROOT is provided.
 STORAGE_ROOT = Path(os.getenv("STORAGE_ROOT", ".")).expanduser()
 JOB_DIR = STORAGE_ROOT / "checkpoints" / "jobs"
 
@@ -44,16 +43,24 @@ def _path(job_id: str) -> Path:
     return JOB_DIR / f"{job_id}.json"
 
 
+def _remote(job_id: str) -> str:
+    return f"jobs/{job_id}.json"
+
+
 def _save(job: VideoJob) -> None:
     job.updated_at = time.time()
     destination = _path(job.job_id)
     tmp = destination.with_suffix(".tmp")
     tmp.write_text(json.dumps(asdict(job), indent=2), encoding="utf-8")
     tmp.replace(destination)
+    if storage.enabled:
+        storage.upload_file(destination, _remote(job.job_id))
 
 
 def _load(job_id: str) -> Optional[VideoJob]:
     source = _path(job_id)
+    if not source.exists() and storage.enabled:
+        storage.download_file(_remote(job_id), source)
     if not source.exists():
         return None
     try:
@@ -64,6 +71,10 @@ def _load(job_id: str) -> Optional[VideoJob]:
 
 def _load_all() -> list[VideoJob]:
     JOB_DIR.mkdir(parents=True, exist_ok=True)
+    if storage.enabled:
+        for remote in storage.list_files("jobs"):
+            if remote.startswith("jobs/") and remote.endswith(".json"):
+                _load(Path(remote).stem)
     jobs: list[VideoJob] = []
     for source in JOB_DIR.glob("*.json"):
         try:
@@ -99,15 +110,8 @@ def start_video_job(
     project_id: Optional[str] = None,
     job_id: Optional[str] = None,
 ) -> str:
-    """Start generation in a server-side thread and persist live job state."""
     job_id = job_id or uuid.uuid4().hex[:12]
-    job = VideoJob(
-        job_id=job_id,
-        project_id=project_id,
-        status="queued",
-        phase="Queued",
-        diagnostics="Queued on server. You can close the phone while generation continues.",
-    )
+    job = VideoJob(job_id=job_id, project_id=project_id, status="queued", phase="Queued", diagnostics="Queued on server. You can close the phone while generation continues.")
     with _lock:
         _jobs[job_id] = job
         _save(job)
@@ -122,13 +126,7 @@ def start_video_job(
         progress(status="running", phase="Planning", progress=2, diagnostics="Processing on Render server...")
         try:
             video_path, diagnostics = fn(progress)
-            progress(
-                status="completed" if video_path else "failed",
-                phase="Completed" if video_path else "Failed",
-                progress=100 if video_path else 0,
-                video_path=str(video_path) if video_path else None,
-                diagnostics=diagnostics,
-            )
+            progress(status="completed" if video_path else "failed", phase="Completed" if video_path else "Failed", progress=100 if video_path else 0, video_path=str(video_path) if video_path else None, diagnostics=diagnostics)
         except Exception as exc:
             progress(status="failed", phase="Failed", diagnostics=f"VIDEO GENERATION FAILED\n\n{exc}")
 
