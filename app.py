@@ -55,17 +55,22 @@ def _video_dimensions(video_format: str) -> tuple[int, int]:
     raise ValueError("Unsupported video format. Choose YouTube 16:9 or Shorts 9:16.")
 
 
-def _generate_voice_over(prompt: str, content_type: str, scenes, output_path: str) -> tuple[str | None, str, list]:
+def _generate_voice_over(prompt: str, content_type: str, scenes, output_path: str, progress=None) -> tuple[str | None, str, list]:
     planned = NarrationPlanner.build_segments(prompt, scenes, content_type)
     provider = KokoroProvider(voice=settings.kokoro_voice, speed=settings.kokoro_speed)
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     generated: list[NarrationAudioSegment] = []
-    for segment in planned:
+    total = len(planned)
+    for index, segment in enumerate(planned, start=1):
+        if progress:
+            progress(phase="Voice-over", progress=55 + int(20 * (index - 1) / max(1, total)), voice_completed=index - 1, total_voice=total, diagnostics=f"Generating voice-over {index - 1}/{total}...")
         scene_path = output.parent / f"{output.stem}_{segment.order:03d}.wav"
         provider.generate_voice_over(segment.text, str(scene_path), language=settings.default_language)
         measured = probe_audio_duration(str(scene_path))
         generated.append(NarrationAudioSegment(segment, str(scene_path), measured))
+        if progress:
+            progress(phase="Voice-over", progress=55 + int(20 * index / max(1, total)), voice_completed=index, total_voice=total, diagnostics=f"Voice-over {index}/{total} complete.")
     concatenate_audio_segments(generated, str(output))
     measured_segments = [replace(item.segment, duration_seconds=item.duration_seconds) for item in generated]
     total_duration = sum(item.duration_seconds for item in generated)
@@ -104,7 +109,7 @@ def _diagnostic_report(state, duration_label: str, content_type: str, video_form
     return "\n".join(report)
 
 
-def _create_video_sync(prompt: str, duration_label: str, content_type: str, video_format: str):
+def _create_video_sync(prompt: str, duration_label: str, content_type: str, video_format: str, progress=None):
     prompt = (prompt or "").strip()
     duration_seconds = _duration_seconds(duration_label)
     style = _content_style(content_type)
@@ -113,8 +118,11 @@ def _create_video_sync(prompt: str, duration_label: str, content_type: str, vide
     registry = ProviderRegistry()
     orchestrator = PipelineOrchestrator(provider_engine=registry.engine)
     state = orchestrator.create_project(project_id, duration_seconds)
-    scene_order = {scene.scene_id: index for index, scene in enumerate(state.scenes, start=1)}
     total_scenes = len(state.scenes)
+    if progress:
+        progress(phase="Planning", progress=5, scenes_completed=0, total_scenes=total_scenes, diagnostics=f"Planning {total_scenes} scenes...")
+
+    scene_order = {scene.scene_id: index for index, scene in enumerate(state.scenes, start=1)}
 
     def scene_context(scene):
         director_prompt = DirectorPlanner.visual_prompt(prompt, scene_order[scene.scene_id], total_scenes, style, orchestrator.visual_dna.prompt_prefix())
@@ -122,6 +130,8 @@ def _create_video_sync(prompt: str, duration_label: str, content_type: str, vide
 
     state = orchestrator.run(project_id, scene_context=scene_context)
     completed = [scene for scene in state.scenes if scene.status.value == "completed" and scene.output_path]
+    if progress:
+        progress(phase="Scenes", progress=50, scenes_completed=len(completed), total_scenes=total_scenes, diagnostics=f"Scenes complete: {len(completed)}/{total_scenes}.")
     if len(completed) != len(state.scenes):
         return None, _diagnostic_report(state, duration_label, content_type, video_format)
 
@@ -129,7 +139,9 @@ def _create_video_sync(prompt: str, duration_label: str, content_type: str, vide
     output_dir = Path(settings.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     try:
-        voice_over_path, voice_status, narration_segments = _generate_voice_over(prompt, content_type, completed, str(output_dir / f"{project_id}_voice.mp3"))
+        voice_over_path, voice_status, narration_segments = _generate_voice_over(prompt, content_type, completed, str(output_dir / f"{project_id}_voice.mp3"), progress)
+        if progress:
+            progress(phase="Audio", progress=78, diagnostics="Building music, SFX, and subtitles...")
         audio_cues = AudioPlanner.build_cues(completed, content_type=content_type)
         music_cues = AudioPlanner.music_cues(audio_cues)
         sfx_cues = AudioPlanner.sfx_cues(audio_cues)
@@ -137,6 +149,8 @@ def _create_video_sync(prompt: str, duration_label: str, content_type: str, vide
         subtitle_cues = SubtitlePlanner.build_cues(narration_segments)
         subtitles_path = output_dir / f"{project_id}.srt"
         subtitles_path.write_text(SubtitlePlanner.to_srt(subtitle_cues), encoding="utf-8")
+        if progress:
+            progress(phase="Final Render", progress=88, diagnostics="Rendering final MP4...")
         output_path = output_dir / f"{project_id}.mp4"
         final_path = FinalRenderer.render(scene_paths, str(output_path), voice_over=voice_over_path, music=music_path, sfx=generated_sfx, duration=duration_seconds, width=width, height=height, subtitles_path=str(subtitles_path))
     except Exception as exc:
@@ -150,15 +164,35 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
     prompt = (prompt or "").strip()
     if not prompt:
         raise gr.Error("Tell CASTELOU what story to create first.")
-    job_id = start_video_job(lambda: _create_video_sync(prompt, duration_label, content_type, video_format))
-    return None, f"Job queued: {job_id}\n\nProcessing on the Render server. You can close the phone and reopen the app later to check the job."
+    job_id = start_video_job(lambda progress: _create_video_sync(prompt, duration_label, content_type, video_format, progress))
+    return None, f"Job queued: {job_id}\n\nProcessing on the Render server. You can close the phone while generation continues.\n\nOpen CHECK JOB later to see live phase and progress."
+
+
+def _format_job(job) -> str:
+    spinner = "◐ ◓ ◑ ◒" if job.status == "running" else ""
+    bar_width = 20
+    filled = max(0, min(bar_width, round(job.progress / 100 * bar_width)))
+    bar = "█" * filled + "░" * (bar_width - filled)
+    if job.status == "completed":
+        return f"Job {job.job_id}: COMPLETED\n\n🟢 Video ready\n\n{job.diagnostics}"
+    if job.status == "failed":
+        return f"Job {job.job_id}: FAILED\n\n🔴 {job.phase}\n\n{job.diagnostics}"
+    if job.status == "missing":
+        return f"Job {job.job_id}: MISSING\n\n{job.diagnostics}"
+    return (f"🎬 VIDEO JOB — {job.job_id}\n\n🟢 {job.status.upper()}  {spinner}\n\n"
+            f"Phase: {job.phase}\n\n{bar} {job.progress}%\n\n"
+            f"🎥 Scenes: {job.scenes_completed}/{job.total_scenes}\n"
+            f"🎙️ Voice-over: {job.voice_completed}/{job.total_voice}\n"
+            f"⏱️ Elapsed: {job.elapsed_seconds:.1f}s\n"
+            f"🟢 Render Server: ONLINE\n"
+            f"🔃 Auto-refresh: 5s\n\n{job.diagnostics}")
 
 
 def check_video_job(job_id: str):
     job = get_video_job((job_id or "").strip())
     if job.status == "completed":
-        return job.video_path, f"Job {job.job_id}: COMPLETED\n\n{job.diagnostics}"
-    return None, f"Job {job.job_id}: {job.status.upper()}\n\n{job.diagnostics}"
+        return job.video_path, _format_job(job)
+    return None, _format_job(job)
 
 
 CSS = """
@@ -186,7 +220,7 @@ def build_ui() -> gr.Blocks:
             prompt = gr.Textbox(label="Prompt", placeholder="Tell me a story about...", lines=5, elem_id="prompt")
             create = gr.Button("CREATE VIDEO", variant="primary", elem_id="create")
         video = gr.Video(label="Final MP4", autoplay=False)
-        diagnostics = gr.Textbox(label="Pipeline Diagnostics", lines=16, interactive=False)
+        diagnostics = gr.Textbox(label="Pipeline Diagnostics", lines=20, interactive=False)
         create.click(fn=create_video, inputs=[prompt, duration, content_type, video_format], outputs=[video, diagnostics])
         job_id = gr.Textbox(label="Job ID", interactive=True, placeholder="Paste the Job ID returned after starting a video")
         check = gr.Button("CHECK JOB")
