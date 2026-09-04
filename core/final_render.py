@@ -47,34 +47,59 @@ class FinalRenderer:
             raise VideoProcessingError(f"Scene concatenation failed: {result.stderr[:300]}")
 
     @staticmethod
+    def _attach_subtitles(video_path: str, subtitles_path: str, output_path: str) -> None:
+        """Mux an SRT file as a selectable MP4 subtitle track."""
+        if not os.path.exists(subtitles_path):
+            raise VideoProcessingError(f"Subtitle file does not exist: {subtitles_path}")
+        command = [
+            "ffmpeg", "-y", "-i", video_path, "-i", subtitles_path,
+            "-map", "0:v:0", "-map", "0:a?", "-map", "1:0",
+            "-c:v", "copy", "-c:a", "copy", "-c:s", "mov_text",
+            "-metadata:s:s:0", "language=eng", output_path,
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise VideoProcessingError(f"Subtitle mux failed: {result.stderr[:300]}")
+
+    @staticmethod
     def render(
         scene_paths: Sequence[str], output_path: str, *, voice_over: Optional[str] = None,
         music: Optional[str] = None, sfx: Sequence[AudioClip] = (), duration: Optional[float] = None,
-        width: int = 1920, height: int = 1080,
+        width: int = 1920, height: int = 1080, subtitles_path: Optional[str] = None,
     ) -> str:
-        """Concatenate scenes, then optionally mix VO/music/SFX into the final MP4."""
+        """Concatenate scenes, mix audio, then optionally attach subtitles."""
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
         video_only = str(output.with_name(output.stem + ".video.mp4"))
+        audio_video = str(output.with_name(output.stem + ".audio.mp4"))
         try:
             FinalRenderer._concat_scenes(scene_paths, video_only, width=width, height=height)
         except TypeError as exc:
-            # Keep compatibility with older tests/extensions that monkeypatch the two-argument helper.
             if "unexpected keyword argument 'width'" not in str(exc) and "unexpected keyword argument 'height'" not in str(exc):
                 raise
             FinalRenderer._concat_scenes(scene_paths, video_only)
 
-        if not voice_over and not music and not sfx:
-            os.replace(video_only, output)
+        if voice_over or music or sfx:
+            timeline = AudioMixer.build_timeline(voice_over=voice_over, music=music, sfx=sfx, duration=duration)
+            command = AudioMixer.build_ffmpeg_command(timeline, audio_video, video_path=video_only)
+            result = subprocess.run(command, capture_output=True, text=True, check=False)
+            if result.returncode != 0:
+                if os.path.exists(video_only):
+                    os.remove(video_only)
+                raise VideoProcessingError(f"Final audio render failed: {result.stderr[:300]}")
+            source_for_subtitles = audio_video
+        else:
+            source_for_subtitles = video_only
+
+        if subtitles_path:
+            try:
+                FinalRenderer._attach_subtitles(source_for_subtitles, subtitles_path, str(output))
+            finally:
+                for path in (video_only, audio_video):
+                    if os.path.exists(path):
+                        os.remove(path)
             return str(output)
 
-        timeline = AudioMixer.build_timeline(voice_over=voice_over, music=music, sfx=sfx, duration=duration)
-        command = AudioMixer.build_ffmpeg_command(timeline, str(output), video_path=video_only)
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
-        if result.returncode != 0:
-            if os.path.exists(video_only):
-                os.remove(video_only)
-            raise VideoProcessingError(f"Final audio render failed: {result.stderr[:300]}")
-        if os.path.exists(video_only):
-            os.remove(video_only)
+        if source_for_subtitles != str(output):
+            os.replace(source_for_subtitles, output)
         return str(output)
