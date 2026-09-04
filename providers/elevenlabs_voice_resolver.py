@@ -8,7 +8,7 @@ from utils.api_client import APIClient
 
 
 class ElevenLabsVoiceResolver:
-    """Discover account-accessible non-community/default voices at runtime."""
+    """Discover account-accessible voices at runtime."""
 
     VOICES_ENDPOINT = "/v2/voices"
 
@@ -42,25 +42,34 @@ class ElevenLabsVoiceResolver:
         return score
 
     def resolve(self, language: str = "en") -> Optional[str]:
+        # APIClient does not inject provider-specific authentication headers.
+        # The List Voices endpoint therefore must receive xi-api-key explicitly.
+        headers = {
+            "xi-api-key": self.client.api_key,
+            "Content-Type": "application/json",
+        }
+
         # non-community excludes Voice Library copies and covers personal/workspace
-        # voices. If none are available, default voices are a safe free-plan fallback.
+        # voices. Default voices are tried afterward for older accounts that still
+        # have access to them. The endpoint itself is account-scoped, so we do not
+        # reject a voice merely because available_for_tiers is absent or incomplete.
         candidates = []
         for params in (
             {"page_size": 100, "voice_type": "non-community"},
             {"page_size": 100, "voice_type": "default"},
         ):
             try:
-                response = self.client.get(self.VOICES_ENDPOINT, params=params)
+                response = self.client.get(
+                    self.VOICES_ENDPOINT,
+                    headers=headers,
+                    params=params,
+                )
                 payload = response.json()
             except Exception:
                 continue
 
             for voice in payload.get("voices", []):
                 if not voice.get("voice_id"):
-                    continue
-
-                tiers = {str(t).lower() for t in (voice.get("available_for_tiers") or [])}
-                if tiers and not ({"free", "free_trial"} & tiers):
                     continue
 
                 verified = voice.get("verified_languages") or []
