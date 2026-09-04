@@ -11,11 +11,11 @@ import gradio as gr
 
 from config import settings
 from core.audio_plan import AudioPlanner
+from core.cinematic_audio import CinematicAudioGenerator
 from core.director import DirectorPlanner
 from core.final_render import FinalRenderer
 from core.narration import NarrationAudioSegment, NarrationPlanner, concatenate_audio_segments, probe_audio_duration
 from core.orchestrator import PipelineOrchestrator
-from core.project_state import ProjectStatus
 from core.subtitles import SubtitlePlanner
 from providers.elevenlabs import ElevenLabsProvider
 from providers.registry import ProviderRegistry
@@ -58,9 +58,9 @@ def _generate_voice_over(prompt: str, content_type: str, scenes, output_path: st
     """Generate one TTS track per scene, measure durations, then concatenate in order."""
     planned = NarrationPlanner.build_segments(prompt, scenes, content_type)
     if not settings.elevenlabs_api_key:
-        return None, "Voice-over: skipped (ELEVENLABS_API_KEY not configured).", planned
+        raise RuntimeError("ELEVENLABS_API_KEY is required for the final cinematic documentary render.")
     if not settings.elevenlabs_voice_id:
-        return None, "Voice-over: skipped (ELEVENLABS_VOICE_ID not configured).", planned
+        raise RuntimeError("ELEVENLABS_VOICE_ID is required for the final cinematic documentary render.")
     provider = ElevenLabsProvider()
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -83,15 +83,6 @@ def _sanitize_error(value: object) -> str:
     text = re.sub(r"(?i)(api[_-]?key|token|authorization|bearer|secret|password)=?[^\s,;]+", r"\1=[REDACTED]", text)
     text = re.sub(r"(?i)([?&](?:key|token|api_key)=)[^&\s]+", r"\1[REDACTED]", text)
     return text[:700]
-
-
-def _failure_reason(state) -> str:
-    if state.failure_reason:
-        return state.failure_reason
-    for scene in reversed(state.scenes):
-        if scene.error_message:
-            return scene.error_message
-    return "No scene completed."
 
 
 def _diagnostic_report(state, duration_label: str, content_type: str, video_format: str) -> str:
@@ -134,7 +125,7 @@ def _diagnostic_report(state, duration_label: str, content_type: str, video_form
 
 
 def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_CONTENT_TYPE, video_format: str = DEFAULT_VIDEO_FORMAT):
-    """Run the full pipeline, generate scene-aware audio/subtitles, and render MP4."""
+    """Run the complete cinematic pipeline and produce a YouTube-ready MP4."""
     prompt = (prompt or "").strip()
     if not prompt:
         raise gr.Error("Tell CASTELOU what story to create first.")
@@ -165,22 +156,52 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
     state = orchestrator.run(project_id, scene_context=scene_context)
     completed = [scene for scene in state.scenes if scene.status.value == "completed" and scene.output_path]
     if len(completed) != len(state.scenes):
-        # Return the real checkpoint/provider diagnostics to the UI instead of
-        # throwing gr.Error, which hides the useful backend failure details.
         return None, _diagnostic_report(state, duration_label, content_type, video_format)
+
     scene_paths = [scene.output_path for scene in completed if scene.output_path]
     output_dir = Path(settings.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    voice_over_path, voice_status, narration_segments = _generate_voice_over(prompt, content_type, completed, str(output_dir / f"{project_id}_voice.mp3"))
-    audio_cues = AudioPlanner.build_cues(completed, content_type=content_type)
-    music_cues = AudioPlanner.music_cues(audio_cues)
-    sfx_cues = AudioPlanner.sfx_cues(audio_cues)
-    subtitle_cues = SubtitlePlanner.build_cues(narration_segments)
-    subtitles_path = output_dir / f"{project_id}.srt"
-    subtitles_path.write_text(SubtitlePlanner.to_srt(subtitle_cues), encoding="utf-8")
-    output_path = output_dir / f"{project_id}.mp4"
-    final_path = FinalRenderer.render(scene_paths, str(output_path), voice_over=voice_over_path, duration=duration_seconds, width=width, height=height, subtitles_path=str(subtitles_path))
-    diagnostics = (f"Status: {state.status.value}\n" f"Completed: {len(completed)} / {len(state.scenes)} scenes\n" f"Resume point: {state.resume_from_scene}\n" f"Type: {content_type}\n" f"Format: {video_format} ({width}x{height})\n" f"Director: Hook → Journey → Discovery → Ending\n" f"Audio plan: {len(music_cues)} music cues + {len(sfx_cues)} SFX cues\n" f"Subtitles: {len(subtitle_cues)} measured narration cues attached\n" f"{voice_status}\n" f"Project: {project_id}")
+
+    try:
+        voice_over_path, voice_status, narration_segments = _generate_voice_over(
+            prompt, content_type, completed, str(output_dir / f"{project_id}_voice.mp3")
+        )
+        audio_cues = AudioPlanner.build_cues(completed, content_type=content_type)
+        music_cues = AudioPlanner.music_cues(audio_cues)
+        sfx_cues = AudioPlanner.sfx_cues(audio_cues)
+        music_path, generated_sfx = CinematicAudioGenerator.build_default_layers(
+            output_dir / project_id, duration_seconds, len(completed)
+        )
+        subtitle_cues = SubtitlePlanner.build_cues(narration_segments)
+        subtitles_path = output_dir / f"{project_id}.srt"
+        subtitles_path.write_text(SubtitlePlanner.to_srt(subtitle_cues), encoding="utf-8")
+        output_path = output_dir / f"{project_id}.mp4"
+        final_path = FinalRenderer.render(
+            scene_paths,
+            str(output_path),
+            voice_over=voice_over_path,
+            music=music_path,
+            sfx=generated_sfx,
+            duration=duration_seconds,
+            width=width,
+            height=height,
+            subtitles_path=str(subtitles_path),
+        )
+    except Exception as exc:
+        return None, f"FINAL RENDER FAILED\n\n{_sanitize_error(exc)}"
+
+    diagnostics = (
+        f"Status: {state.status.value}\n"
+        f"Completed: {len(completed)} / {len(state.scenes)} scenes\n"
+        f"Type: {content_type}\n"
+        f"Format: {video_format} ({width}x{height})\n"
+        "Director: Hook → Journey → Discovery → Ending\n"
+        f"Audio plan: {len(music_cues)} music cues + {len(sfx_cues)} SFX cues\n"
+        f"Generated audio: cinematic music + {len(generated_sfx)} transition SFX\n"
+        f"Subtitles: {len(subtitle_cues)} measured narration cues attached\n"
+        f"{voice_status}\n"
+        f"Project: {project_id}"
+    )
     return final_path, diagnostics
 
 
