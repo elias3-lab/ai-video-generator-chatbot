@@ -17,7 +17,7 @@ from core.final_render import FinalRenderer
 from core.narration import NarrationAudioSegment, NarrationPlanner, concatenate_audio_segments, probe_audio_duration
 from core.orchestrator import PipelineOrchestrator
 from core.subtitles import SubtitlePlanner
-from providers.elevenlabs import ElevenLabsProvider
+from providers.kokoro import KokoroProvider
 from providers.registry import ProviderRegistry
 from core.scene_decision import SceneContext
 
@@ -55,25 +55,25 @@ def _video_dimensions(video_format: str) -> tuple[int, int]:
 
 
 def _generate_voice_over(prompt: str, content_type: str, scenes, output_path: str) -> tuple[str | None, str, list]:
-    """Generate one TTS track per scene, measure durations, then concatenate in order."""
+    """Generate one local Kokoro TTS track per scene, measure durations, then concatenate in order."""
     planned = NarrationPlanner.build_segments(prompt, scenes, content_type)
-    if not settings.elevenlabs_api_key:
-        raise RuntimeError("ELEVENLABS_API_KEY is required for the final cinematic documentary render.")
-    if not settings.elevenlabs_voice_id:
-        raise RuntimeError("ELEVENLABS_VOICE_ID is required for the final cinematic documentary render.")
-    provider = ElevenLabsProvider()
+    provider = KokoroProvider(voice=settings.kokoro_voice, speed=settings.kokoro_speed)
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     generated: list[NarrationAudioSegment] = []
     for segment in planned:
-        scene_path = output.parent / f"{output.stem}_{segment.order:03d}.mp3"
-        provider.generate_voice_over(segment.text, str(scene_path), language=settings.default_language)
+        scene_path = output.parent / f"{output.stem}_{segment.order:03d}.wav"
+        provider.generate_voice_over(
+            segment.text,
+            str(scene_path),
+            language=settings.default_language,
+        )
         measured = probe_audio_duration(str(scene_path))
         generated.append(NarrationAudioSegment(segment, str(scene_path), measured))
     concatenate_audio_segments(generated, str(output))
     measured_segments = [replace(item.segment, duration_seconds=item.duration_seconds) for item in generated]
     total_duration = sum(item.duration_seconds for item in generated)
-    status = f"Voice-over: generated with ElevenLabs ({len(generated)} scene tracks, {total_duration:.1f}s measured)."
+    status = f"Voice-over: generated locally with Kokoro ({settings.kokoro_voice}, {len(generated)} scene tracks, {total_duration:.1f}s measured)."
     return str(output), status, measured_segments
 
 
@@ -164,7 +164,7 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
 
     try:
         voice_over_path, voice_status, narration_segments = _generate_voice_over(
-            prompt, content_type, completed, str(output_dir / f"{project_id}_voice.mp3")
+            prompt, content_type, completed, str(output_dir / f"{project_id}_voice.wav")
         )
         audio_cues = AudioPlanner.build_cues(completed, content_type=content_type)
         music_cues = AudioPlanner.music_cues(audio_cues)
