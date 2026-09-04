@@ -9,6 +9,7 @@ from config import settings
 from providers.elevenlabs_voice_resolver import ElevenLabsVoiceResolver
 from utils.api_client import APIClient
 from utils.errors import (
+    APIError,
     AudioProcessingError,
     FileValidationError,
     VoiceOverGenerationError,
@@ -62,6 +63,52 @@ class ElevenLabsProvider:
             params["language_code"] = language
         return self.client.post(endpoint, headers=headers, json=payload, params=params)
 
+    @staticmethod
+    def _is_paid_library_voice_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return (
+            "402" in message
+            and (
+                "paid_plan_required" in message
+                or "library voice" in message
+                or "not available for free" in message
+            )
+        )
+
+    def _request_with_free_voice_fallback(
+        self,
+        text: str,
+        selected_voice: str,
+        model_id: str,
+        output_format: str,
+        language: str,
+    ):
+        try:
+            return self._request_tts(
+                text, selected_voice, model_id, output_format, language
+            )
+        except APIError as exc:
+            # APIClient raises on every HTTP >= 400, so a 402 never reaches
+            # response.status_code handling. Resolve an account-accessible voice
+            # here and retry once only for the specific paid Voice Library error.
+            if not self._is_paid_library_voice_error(exc):
+                raise
+
+            fallback_voice = self.voice_resolver.resolve(language)
+            if not fallback_voice or fallback_voice == selected_voice:
+                raise VoiceOverGenerationError(
+                    "Configured ElevenLabs voice requires a paid plan, and no free "
+                    "API-accessible voice was found for this account."
+                ) from exc
+
+            logger.warning(
+                "Configured ElevenLabs voice is unavailable on this plan; "
+                "using an account-accessible voice discovered at runtime."
+            )
+            return self._request_tts(
+                text, fallback_voice, model_id, output_format, language
+            )
+
     def generate_voice_over(
         self,
         text: str,
@@ -87,22 +134,9 @@ class ElevenLabsProvider:
                 selected_voice,
                 len(text),
             )
-            response = self._request_tts(text, selected_voice, model_id, output_format, language)
-
-            # Free API plans reject Voice Library/community voices with HTTP 402.
-            # Discover an account-accessible voice instead of relying on a hard-coded
-            # legacy voice that may no longer exist for newer accounts.
-            if response.status_code == 402:
-                fallback_voice = self.voice_resolver.resolve(language)
-                if fallback_voice and fallback_voice != selected_voice:
-                    logger.warning(
-                        "Configured ElevenLabs voice is unavailable on this plan; "
-                        "using an account-accessible voice discovered at runtime."
-                    )
-                    selected_voice = fallback_voice
-                    response = self._request_tts(
-                        text, selected_voice, model_id, output_format, language
-                    )
+            response = self._request_with_free_voice_fallback(
+                text, selected_voice, model_id, output_format, language
+            )
 
             if response.status_code != 200:
                 raise VoiceOverGenerationError(
