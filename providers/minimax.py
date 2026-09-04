@@ -32,18 +32,16 @@ class MiniMaxProvider:
     def headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
 
-    def generate_video(
-        self,
-        prompt: str,
-        duration: int = DEFAULT_DURATION,
-        resolution: str = DEFAULT_RESOLUTION,
-    ) -> str:
+    def generate_video(self, prompt: str, duration: int = DEFAULT_DURATION, resolution: str = DEFAULT_RESOLUTION) -> str:
         if not prompt or not prompt.strip():
             raise VideoGenerationError("Prompt cannot be empty")
         if duration not in (6, 10):
             raise VideoGenerationError("MiniMax video duration must be 6 or 10 seconds")
         if resolution not in ("768P", "1080P"):
             raise VideoGenerationError("MiniMax resolution must be 768P or 1080P")
+        # Hailuo 2.3 does not support the 10s + 1080P combination.
+        if duration == 10 and resolution == "1080P":
+            resolution = "768P"
         try:
             response = requests.post(
                 f"{self.BASE_URL}{self.CREATE_ENDPOINT}",
@@ -64,12 +62,7 @@ class MiniMaxProvider:
 
     def get_task_status(self, task_id: str) -> dict:
         try:
-            response = requests.get(
-                f"{self.BASE_URL}{self.QUERY_ENDPOINT}",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                params={"task_id": task_id},
-                timeout=settings.request_timeout_seconds,
-            )
+            response = requests.get(f"{self.BASE_URL}{self.QUERY_ENDPOINT}", headers={"Authorization": f"Bearer {self.api_key}"}, params={"task_id": task_id}, timeout=settings.request_timeout_seconds)
             response.raise_for_status()
             return response.json()
         except requests.RequestException as exc:
@@ -94,12 +87,7 @@ class MiniMaxProvider:
 
     def get_download_url(self, file_id: str) -> str:
         try:
-            response = requests.get(
-                f"{self.BASE_URL}{self.FILE_ENDPOINT}",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                params={"file_id": file_id},
-                timeout=settings.request_timeout_seconds,
-            )
+            response = requests.get(f"{self.BASE_URL}{self.FILE_ENDPOINT}", headers={"Authorization": f"Bearer {self.api_key}"}, params={"file_id": file_id}, timeout=settings.request_timeout_seconds)
             response.raise_for_status()
             data = response.json()
             url = data.get("file", {}).get("download_url")
