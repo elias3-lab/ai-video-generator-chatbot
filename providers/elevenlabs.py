@@ -6,6 +6,7 @@ import os
 from typing import Optional
 
 from config import settings
+from providers.elevenlabs_voice_resolver import ElevenLabsVoiceResolver
 from utils.api_client import APIClient
 from utils.errors import (
     AudioProcessingError,
@@ -22,7 +23,6 @@ class ElevenLabsProvider:
     TTS_ENDPOINT = "/v1/text-to-speech"
     DEFAULT_MODEL = "eleven_multilingual_v2"
     DEFAULT_OUTPUT_FORMAT = "mp3_44100_128"
-    FREE_FALLBACK_VOICE_ID = "pNInz6obpgDQGcFmaJgB"
 
     def __init__(self, voice_id: Optional[str] = None):
         self.api_key = settings.elevenlabs_api_key
@@ -38,6 +38,7 @@ class ElevenLabsProvider:
             base_url=self.BASE_URL,
             timeout=settings.request_timeout_seconds,
         )
+        self.voice_resolver = ElevenLabsVoiceResolver(self.client)
 
     @staticmethod
     def validate_language(language: str) -> str:
@@ -88,16 +89,20 @@ class ElevenLabsProvider:
             )
             response = self._request_tts(text, selected_voice, model_id, output_format, language)
 
-            # ElevenLabs returns 402 for Voice Library voices on free API plans.
-            # Retry once with the legacy premade Adam voice, which is not a
-            # community Voice Library voice and is suitable as a free-plan fallback.
-            if response.status_code == 402 and selected_voice != self.FREE_FALLBACK_VOICE_ID:
-                logger.warning(
-                    "Configured ElevenLabs voice is not available on the current plan; "
-                    "falling back to a premade voice."
-                )
-                selected_voice = self.FREE_FALLBACK_VOICE_ID
-                response = self._request_tts(text, selected_voice, model_id, output_format, language)
+            # Free API plans reject Voice Library/community voices with HTTP 402.
+            # Discover an account-accessible voice instead of relying on a hard-coded
+            # legacy voice that may no longer exist for newer accounts.
+            if response.status_code == 402:
+                fallback_voice = self.voice_resolver.resolve(language)
+                if fallback_voice and fallback_voice != selected_voice:
+                    logger.warning(
+                        "Configured ElevenLabs voice is unavailable on this plan; "
+                        "using an account-accessible voice discovered at runtime."
+                    )
+                    selected_voice = fallback_voice
+                    response = self._request_tts(
+                        text, selected_voice, model_id, output_format, language
+                    )
 
             if response.status_code != 200:
                 raise VoiceOverGenerationError(
