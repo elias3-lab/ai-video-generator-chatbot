@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
 from .checkpoint_store import CheckpointStore
+from .dropbox_storage import storage
 from .project_state import ProjectState, SceneState, ProjectStatus
 from .scene_decision import SceneContext, decide_scene_media
 from .provider_engine import ProviderEngine
@@ -39,23 +40,25 @@ class PipelineOrchestrator:
 
     def create_project(self, project_id: str, duration_seconds: int) -> ProjectState:
         plans = plan_scenes(duration_seconds)
-        state = ProjectState(
-            project_id=project_id,
-            visual_dna={
-                "style": self.visual_dna.style,
-                "camera_language": self.visual_dna.camera_language,
-                "color_language": self.visual_dna.color_language,
-                "aspect_ratio": self.visual_dna.aspect_ratio,
-                "characters": list(self.visual_dna.characters),
-                "locations": list(self.visual_dna.locations),
-                "wardrobe": list(self.visual_dna.wardrobe),
-                "recurring_objects": list(self.visual_dna.recurring_objects),
-                "negative_constraints": list(self.visual_dna.negative_constraints),
-            },
-            scenes=[{"scene_id": plan.scene_id, "target_duration": plan.duration_seconds} for plan in plans],
-        )
+        state = ProjectState(project_id=project_id, visual_dna={"style": self.visual_dna.style, "camera_language": self.visual_dna.camera_language, "color_language": self.visual_dna.color_language, "aspect_ratio": self.visual_dna.aspect_ratio, "characters": list(self.visual_dna.characters), "locations": list(self.visual_dna.locations), "wardrobe": list(self.visual_dna.wardrobe), "recurring_objects": list(self.visual_dna.recurring_objects), "negative_constraints": list(self.visual_dna.negative_constraints)}, scenes=[{"scene_id": plan.scene_id, "target_duration": plan.duration_seconds} for plan in plans])
         self.checkpoints.save(state)
         return state
+
+    def _restore_scene_asset(self, project_id: str, scene: SceneState) -> None:
+        if not storage.enabled or not scene.output_path:
+            return
+        from pathlib import Path
+        local = Path(scene.output_path)
+        if local.exists():
+            return
+        storage.download_file(f"projects/{project_id}/scenes/{scene.scene_id}/{local.name}", local)
+
+    def _persist_scene_asset(self, project_id: str, scene: SceneState) -> None:
+        if storage.enabled and scene.output_path:
+            from pathlib import Path
+            path = Path(scene.output_path)
+            if path.exists():
+                storage.upload_file(path, f"projects/{project_id}/scenes/{scene.scene_id}/{path.name}")
 
     def run(self, project_id: str, executor: Optional[Callable[[SceneState], SceneResult]] = None, *, scene_context: Optional[Callable[[SceneState], SceneContext]] = None, provider_executor: Optional[Callable[[SceneState, str], SceneResult]] = None) -> ProjectState:
         if executor is None and provider_executor is None and self.provider_engine is None:
@@ -68,6 +71,7 @@ class PipelineOrchestrator:
 
         for scene in state.scenes:
             if scene.status.value == "completed":
+                self._restore_scene_asset(project_id, scene)
                 continuity.mark_completed(scene.scene_id, location=scene.location_ref, characters=scene.character_refs)
                 continue
 
@@ -134,6 +138,7 @@ class PipelineOrchestrator:
                 scene.visual_dna_id = result.visual_dna_id or self.visual_dna.stable_id()
                 scene.character_refs = list(result.character_refs or self.visual_dna.characters)
                 scene.location_ref = result.location_ref or scene.location_ref
+                self._persist_scene_asset(project_id, scene)
                 continuity.mark_completed(scene.scene_id, location=scene.location_ref, characters=scene.character_refs)
                 self.checkpoints.save(state)
             except Exception as exc:
