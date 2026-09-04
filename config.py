@@ -12,14 +12,18 @@ from pydantic import Field, validator
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
-    # API Keys (Required)
+    # API Keys for external media/video providers. Narration is local via Kokoro.
     minimax_api_key: str = Field(default="", alias="MINIMAX_API_KEY")
     minimax_group_id: Optional[str] = Field(default=None, alias="MINIMAX_GROUP_ID")
     runway_api_key: str = Field(default="", alias="RUNWAY_API_KEY")
-    elevenlabs_api_key: str = Field(default="", alias="ELEVENLABS_API_KEY")
-    elevenlabs_voice_id: Optional[str] = Field(default=None, alias="ELEVENLABS_VOICE_ID")
+    elevenlabs_api_key: str = Field(default="local", alias="ELEVENLABS_API_KEY")
+    elevenlabs_voice_id: Optional[str] = Field(default="af_sarah", alias="ELEVENLABS_VOICE_ID")
     pexels_api_key: str = Field(default="", alias="PEXELS_API_KEY")
     pixabay_api_key: str = Field(default="", alias="PIXABAY_API_KEY")
+
+    # Local Kokoro narration
+    kokoro_voice: str = Field(default="af_sarah", alias="KOKORO_VOICE")
+    kokoro_speed: float = Field(default=1.0, alias="KOKORO_SPEED")
 
     # Content / Voice Languages
     supported_languages: tuple[str, ...] = ("en", "ar", "fr", "de")
@@ -84,9 +88,12 @@ class Settings(BaseSettings):
             raise ValueError("DEFAULT_LANGUAGE must be one of: en, ar, fr, de")
         return v
 
-    @validator("voice_over_volume", "background_music_volume")
-    def validate_volume(cls, v):
-        if not 0 <= v <= 1:
+    @validator("voice_over_volume", "background_music_volume", "kokoro_speed")
+    def validate_audio_values(cls, v, values=None):
+        if "kokoro_speed" in str(values):
+            if v <= 0:
+                raise ValueError("KOKORO_SPEED must be positive")
+        elif not 0 <= v <= 1:
             raise ValueError(f"Volume must be between 0 and 1, got: {v}")
         return v
 
@@ -107,8 +114,6 @@ class Settings(BaseSettings):
             errors.append("MINIMAX_API_KEY not set")
         if not self.runway_api_key:
             errors.append("RUNWAY_API_KEY not set")
-        if not self.elevenlabs_api_key:
-            errors.append("ELEVENLABS_API_KEY not set")
         if errors:
             raise ValueError(
                 f"Missing required API keys: {', '.join(errors)}. "
