@@ -11,6 +11,7 @@ from config import settings
 from core.final_render import FinalRenderer
 from core.orchestrator import PipelineOrchestrator
 from core.project_state import ProjectStatus
+from providers.elevenlabs import ElevenLabsProvider
 from providers.registry import ProviderRegistry
 from core.scene_decision import SceneContext
 
@@ -52,8 +53,39 @@ def _video_dimensions(video_format: str) -> tuple[int, int]:
     raise ValueError("Unsupported video format. Choose YouTube 16:9 or Shorts 9:16.")
 
 
+def _build_narration_text(prompt: str, content_type: str) -> str:
+    """Create the first-pass narration brief used by the TTS stage.
+
+    The project can later replace this deterministic brief with an LLM script
+    planner without changing the ElevenLabs or final-render interfaces.
+    """
+    prefix = (
+        "In this documentary, we explore "
+        if content_type == "Documentary"
+        else "This cinematic story follows "
+    )
+    return f"{prefix}{prompt.strip()}"
+
+
+def _generate_voice_over(prompt: str, content_type: str, output_path: str) -> tuple[str | None, str]:
+    """Generate voice-over when ElevenLabs is configured; otherwise continue without it."""
+    if not settings.elevenlabs_api_key:
+        return None, "Voice-over: skipped (ELEVENLABS_API_KEY not configured)."
+    if not settings.elevenlabs_voice_id:
+        return None, "Voice-over: skipped (ELEVENLABS_VOICE_ID not configured)."
+
+    narration = _build_narration_text(prompt, content_type)
+    provider = ElevenLabsProvider()
+    provider.generate_voice_over(
+        narration,
+        output_path,
+        language=settings.default_language,
+    )
+    return output_path, "Voice-over: generated with ElevenLabs."
+
+
 def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_CONTENT_TYPE, video_format: str = DEFAULT_VIDEO_FORMAT):
-    """Run the pipeline and render completed scenes into one MP4."""
+    """Run the pipeline, generate voice-over, and render completed scenes into one MP4."""
     prompt = (prompt or "").strip()
     if not prompt:
         raise gr.Error("Tell CASTELOU what story to create first.")
@@ -81,8 +113,22 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
         raise gr.Error(f"VIDEO GENERATION PAUSED\n{reason or 'No scene completed.'}")
 
     scene_paths = [scene.output_path for scene in completed if scene.output_path]
-    output_path = Path(settings.output_dir) / f"{project_id}.mp4"
-    final_path = FinalRenderer.render(scene_paths, str(output_path), width=width, height=height)
+    output_dir = Path(settings.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    voice_over_path, voice_status = _generate_voice_over(
+        prompt,
+        content_type,
+        str(output_dir / f"{project_id}_voice.mp3"),
+    )
+    output_path = output_dir / f"{project_id}.mp4"
+    final_path = FinalRenderer.render(
+        scene_paths,
+        str(output_path),
+        voice_over=voice_over_path,
+        duration=duration_seconds,
+        width=width,
+        height=height,
+    )
 
     diagnostics = (
         f"Status: {state.status.value}\n"
@@ -90,6 +136,7 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
         f"Resume point: {state.resume_from_scene}\n"
         f"Type: {content_type}\n"
         f"Format: {video_format} ({width}x{height})\n"
+        f"{voice_status}\n"
         f"Project: {project_id}"
     )
     if state.status != ProjectStatus.COMPLETED:
