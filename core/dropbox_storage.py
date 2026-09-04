@@ -22,11 +22,16 @@ class DropboxStorage:
     def _path(self, remote_path: str) -> str:
         return f"{self.base_path}/{remote_path.strip('/')}"
 
+    @staticmethod
+    def _is_final_path(remote_path: str) -> bool:
+        parts = [p for p in remote_path.strip("/").split("/") if p]
+        return "final" in parts
+
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token}"}
 
     def ensure_folder(self, remote_folder: str) -> None:
-        if not self.enabled:
+        if not self.enabled or self._is_final_path(remote_folder):
             return
         parts = [p for p in remote_folder.strip("/").split("/") if p]
         current = ""
@@ -42,7 +47,7 @@ class DropboxStorage:
                 response.raise_for_status()
 
     def upload_bytes(self, data: bytes, remote_path: str) -> str:
-        if not self.enabled:
+        if not self.enabled or self._is_final_path(remote_path):
             return ""
         self.ensure_folder(str(Path(remote_path).parent).replace("\\", "/"))
         response = requests.post(
@@ -65,7 +70,7 @@ class DropboxStorage:
         return self.upload_bytes(source.read_bytes(), remote_path)
 
     def download_bytes(self, remote_path: str) -> Optional[bytes]:
-        if not self.enabled:
+        if not self.enabled or self._is_final_path(remote_path):
             return None
         response = requests.post(
             "https://content.dropboxapi.com/2/files/download",
@@ -87,7 +92,7 @@ class DropboxStorage:
         return True
 
     def list_files(self, remote_folder: str) -> list[str]:
-        if not self.enabled:
+        if not self.enabled or self._is_final_path(remote_folder):
             return []
         response = requests.post(
             "https://api.dropboxapi.com/2/files/list_folder",
