@@ -1,4 +1,4 @@
-"""Scene-aware narration planning for cinematic documentary projects."""
+"""Scene-aware narration planning and measured audio timing."""
 
 from __future__ import annotations
 
@@ -13,18 +13,14 @@ from utils.errors import AudioProcessingError
 
 @dataclass(frozen=True)
 class NarrationSegment:
-    """Narration assigned to one planned scene."""
-
     scene_id: str
     order: int
-    duration_seconds: int
+    duration_seconds: float
     text: str
 
 
 @dataclass(frozen=True)
 class NarrationAudioSegment:
-    """Generated audio for one narration segment with measured duration."""
-
     segment: NarrationSegment
     path: str
     duration_seconds: float
@@ -47,10 +43,9 @@ class NarrationPlanner:
         total = len(scenes)
         for index, scene in enumerate(scenes, start=1):
             scene_id = str(scene.scene_id)
-            duration = int(scene.duration_seconds)
+            duration = float(scene.duration_seconds)
             if duration <= 0:
                 raise ValueError("Scene duration must be positive")
-
             if content_type == "Documentary":
                 if index == 1:
                     text = f"We begin our journey into {prompt}."
@@ -65,7 +60,6 @@ class NarrationPlanner:
                     text = f"The journey reaches its final moment, revealing what {prompt} has become."
                 else:
                     text = f"The story moves forward, uncovering another chapter of {prompt}."
-
             segments.append(NarrationSegment(scene_id, index, duration, text))
         return segments
 
@@ -77,7 +71,6 @@ class NarrationPlanner:
 
 
 def probe_audio_duration(path: str) -> float:
-    """Measure an audio file using ffprobe without decoding the complete file."""
     if not os.path.exists(path):
         raise AudioProcessingError(f"Audio file not found: {path}")
     command = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path]
@@ -94,7 +87,6 @@ def probe_audio_duration(path: str) -> float:
 
 
 def concatenate_audio_segments(segments: Sequence[NarrationAudioSegment], output_path: str) -> str:
-    """Concatenate generated scene audio in order and return the final track path."""
     if not segments:
         raise AudioProcessingError("Cannot concatenate empty narration audio")
     output = Path(output_path)
