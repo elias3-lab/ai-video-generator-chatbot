@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
+import re
 
 import requests
 
@@ -39,13 +40,29 @@ class FreeMediaSearch:
         self.pixabay_api_key = pixabay_api_key
         self.timeout = timeout
 
+    @staticmethod
+    def _clean_query(query: str, max_length: int = 90) -> str:
+        """Turn a long cinematic prompt into a compact stock-footage search query."""
+        text = re.sub(r"https?://\S+", " ", query or "")
+        text = re.sub(r"[^\w\s,-]", " ", text, flags=re.UNICODE)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:max_length].strip()
+
     def search(self, query: str, *, per_source: int = 5) -> list[MediaAsset]:
         results: list[MediaAsset] = []
-        if self.pexels_api_key:
-            results.extend(self._pexels(query, per_source))
-        if self.pixabay_api_key:
-            results.extend(self._pixabay(query, per_source))
-        results.extend(self._wikimedia(query, per_source))
+        compact_query = self._clean_query(query)
+        for source in (self._pexels, self._pixabay, self._wikimedia):
+            try:
+                if source is self._pexels and not self.pexels_api_key:
+                    continue
+                if source is self._pixabay and not self.pixabay_api_key:
+                    continue
+                results.extend(source(compact_query, per_source))
+            except requests.RequestException:
+                # One unavailable stock provider must not block the others.
+                continue
+            except Exception:
+                continue
         return results
 
     @staticmethod
@@ -79,7 +96,6 @@ class FreeMediaSearch:
         return str(destination)
 
     def _validate_download(self, path: str) -> str:
-        """Reject downloads that are not valid video files before pipeline use."""
         VideoProcessor.validate_video_file(path)
         return path
 
