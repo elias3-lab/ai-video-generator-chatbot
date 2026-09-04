@@ -15,10 +15,18 @@ class FinalRenderer:
     """Render completed scene videos into one consistent final MP4."""
 
     @staticmethod
-    def _concat_scenes(scene_paths: Sequence[str], output_path: str) -> None:
+    def _concat_scenes(
+        scene_paths: Sequence[str],
+        output_path: str,
+        *,
+        width: int = 1920,
+        height: int = 1080,
+    ) -> None:
         """Normalize mixed scene inputs and concatenate them with FFmpeg."""
         if not scene_paths:
             raise VideoProcessingError("No completed scene videos to render")
+        if width <= 0 or height <= 0:
+            raise VideoProcessingError("Final render dimensions must be positive")
         for path in scene_paths:
             if not os.path.exists(path):
                 raise VideoProcessingError(f"Scene video does not exist: {path}")
@@ -31,8 +39,8 @@ class FinalRenderer:
             label = f"v{index}"
             labels.append(f"[{label}]")
             filter_parts.append(
-                f"[{index}:v:0]scale=1920:1080:force_original_aspect_ratio=decrease,"
-                f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p,setpts=PTS-STARTPTS[{label}]"
+                f"[{index}:v:0]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p,setpts=PTS-STARTPTS[{label}]"
             )
         filter_parts.append("".join(labels) + f"concat=n={len(scene_paths)}:v=1:a=0[vout]")
 
@@ -65,12 +73,14 @@ class FinalRenderer:
         music: Optional[str] = None,
         sfx: Sequence[AudioClip] = (),
         duration: Optional[float] = None,
+        width: int = 1920,
+        height: int = 1080,
     ) -> str:
         """Concatenate scenes, then optionally mix VO/music/SFX into the final MP4."""
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
         video_only = str(output.with_name(output.stem + ".video.mp4"))
-        FinalRenderer._concat_scenes(scene_paths, video_only)
+        FinalRenderer._concat_scenes(scene_paths, video_only, width=width, height=height)
 
         if not voice_over and not music and not sfx:
             os.replace(video_only, output)
