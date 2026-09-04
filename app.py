@@ -165,7 +165,7 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
     if not prompt:
         raise gr.Error("Tell CASTELOU what story to create first.")
     job_id = start_video_job(lambda progress: _create_video_sync(prompt, duration_label, content_type, video_format, progress))
-    return None, f"Job queued: {job_id}\n\nProcessing on the Render server. You can close the phone while generation continues.\n\nOpen CHECK JOB later to see live phase and progress."
+    return None, f"Job queued: {job_id}\n\nProcessing on the Render server. You can close the phone while generation continues.\n\nOpen CHECK JOB later to see live phase and progress.", None
 
 
 def _format_job(job) -> str:
@@ -191,8 +191,8 @@ def _format_job(job) -> str:
 def check_video_job(job_id: str):
     job = get_video_job((job_id or "").strip())
     if job.status == "completed":
-        return job.video_path, _format_job(job)
-    return None, _format_job(job)
+        return job.video_path, _format_job(job), job.video_path
+    return None, _format_job(job), None
 
 
 CSS = """
@@ -220,11 +220,12 @@ def build_ui() -> gr.Blocks:
             prompt = gr.Textbox(label="Prompt", placeholder="Tell me a story about...", lines=5, elem_id="prompt")
             create = gr.Button("CREATE VIDEO", variant="primary", elem_id="create")
         video = gr.Video(label="Final MP4", autoplay=False)
+        download = gr.DownloadButton("DOWNLOAD VIDEO", value=None)
         diagnostics = gr.Textbox(label="Pipeline Diagnostics", lines=20, interactive=False)
-        create.click(fn=create_video, inputs=[prompt, duration, content_type, video_format], outputs=[video, diagnostics])
+        create.click(fn=create_video, inputs=[prompt, duration, content_type, video_format], outputs=[video, diagnostics, download])
         job_id = gr.Textbox(label="Job ID", interactive=True, placeholder="Paste the Job ID returned after starting a video")
         check = gr.Button("CHECK JOB")
-        check.click(fn=check_video_job, inputs=[job_id], outputs=[video, diagnostics])
+        check.click(fn=check_video_job, inputs=[job_id], outputs=[video, diagnostics, download])
     return demo
 
 
