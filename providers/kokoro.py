@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
+import onnxruntime as ort
 import soundfile as sf
 from kokoro_onnx import Kokoro
 
@@ -39,8 +40,24 @@ class KokoroProvider:
     @classmethod
     def _get_engine(cls) -> Kokoro:
         if cls._engine is None:
-            logger.info("Loading local Kokoro ONNX TTS model")
-            cls._engine = Kokoro(str(cls.MODEL_PATH), str(cls.VOICES_PATH))
+            logger.info("Loading local Kokoro ONNX TTS model with low-memory CPU settings")
+            session_options = ort.SessionOptions()
+            # Render Free has a tight memory budget. Limit ONNX Runtime thread pools
+            # and arena allocations so model initialization does not push the service
+            # over its memory limit.
+            session_options.intra_op_num_threads = 1
+            session_options.inter_op_num_threads = 1
+            session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+            session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+            session_options.enable_mem_pattern = False
+            session_options.enable_cpu_mem_arena = False
+            session = ort.InferenceSession(
+                str(cls.MODEL_PATH),
+                sess_options=session_options,
+                providers=["CPUExecutionProvider"],
+            )
+            cls._engine = Kokoro.from_session(session, str(cls.VOICES_PATH))
+            logger.info("Kokoro ONNX TTS model loaded successfully")
         return cls._engine
 
     def generate_voice_over(
@@ -66,6 +83,12 @@ class KokoroProvider:
 
         try:
             engine = self._get_engine()
+            logger.info(
+                "Kokoro TTS generation started: voice=%s chars=%s output=%s",
+                selected_voice,
+                len(text),
+                output_path,
+            )
             samples, sample_rate = engine.create(
                 text.strip(),
                 voice=selected_voice,
