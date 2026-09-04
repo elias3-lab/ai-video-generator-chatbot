@@ -17,6 +17,7 @@ JOB_DIR = Path("checkpoints") / "jobs"
 @dataclass
 class VideoJob:
     job_id: str
+    project_id: Optional[str] = None
     status: str = "queued"
     phase: str = "Queued"
     progress: int = 0
@@ -57,6 +58,17 @@ def _load(job_id: str) -> Optional[VideoJob]:
         return None
 
 
+def _load_all() -> list[VideoJob]:
+    JOB_DIR.mkdir(parents=True, exist_ok=True)
+    jobs: list[VideoJob] = []
+    for source in JOB_DIR.glob("*.json"):
+        try:
+            jobs.append(VideoJob(**json.loads(source.read_text(encoding="utf-8"))))
+        except (OSError, ValueError, TypeError):
+            continue
+    return sorted(jobs, key=lambda item: item.updated_at, reverse=True)
+
+
 def update_video_job(job_id: str, **changes: object) -> VideoJob:
     with _lock:
         job = _jobs.get(job_id) or _load(job_id)
@@ -70,11 +82,24 @@ def update_video_job(job_id: str, **changes: object) -> VideoJob:
         return VideoJob(**asdict(job))
 
 
-def start_video_job(fn: Callable[[Callable[..., None]], tuple[object, str]]) -> str:
+def list_video_jobs(limit: int = 10) -> list[VideoJob]:
+    with _lock:
+        merged = {job.job_id: job for job in _load_all()}
+        merged.update(_jobs)
+        return sorted(merged.values(), key=lambda item: item.updated_at, reverse=True)[:limit]
+
+
+def start_video_job(
+    fn: Callable[[Callable[..., None]], tuple[object, str]],
+    *,
+    project_id: Optional[str] = None,
+    job_id: Optional[str] = None,
+) -> str:
     """Start generation in a server-side thread and persist live job state."""
-    job_id = uuid.uuid4().hex[:12]
+    job_id = job_id or uuid.uuid4().hex[:12]
     job = VideoJob(
         job_id=job_id,
+        project_id=project_id,
         status="queued",
         phase="Queued",
         diagnostics="Queued on server. You can close the phone while generation continues.",
@@ -96,7 +121,7 @@ def start_video_job(fn: Callable[[Callable[..., None]], tuple[object, str]]) -> 
             progress(
                 status="completed" if video_path else "failed",
                 phase="Completed" if video_path else "Failed",
-                progress=100 if video_path else job.progress,
+                progress=100 if video_path else 0,
                 video_path=str(video_path) if video_path else None,
                 diagnostics=diagnostics,
             )
