@@ -13,6 +13,7 @@ from core.final_render import FinalRenderer
 from core.narration import NarrationPlanner
 from core.orchestrator import PipelineOrchestrator
 from core.project_state import ProjectStatus
+from core.subtitles import SubtitlePlanner
 from providers.elevenlabs import ElevenLabsProvider
 from providers.registry import ProviderRegistry
 from core.scene_decision import SceneContext
@@ -72,7 +73,7 @@ def _failure_reason(state) -> str:
 
 
 def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_CONTENT_TYPE, video_format: str = DEFAULT_VIDEO_FORMAT):
-    """Run the pipeline, generate scene-aware audio, and render the final MP4."""
+    """Run the pipeline, generate scene-aware audio/subtitles, and render the final MP4."""
     prompt = (prompt or "").strip()
     if not prompt:
         raise gr.Error("Tell CASTELOU what story to create first.")
@@ -103,16 +104,21 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
         prompt, content_type, completed, str(output_dir / f"{project_id}_voice.mp3")
     )
 
-    # Build the semantic audio timeline now; real assets can be supplied later
-    # without changing the orchestration contract.
     audio_cues = AudioPlanner.build_cues(completed, content_type=content_type)
     music_cues = AudioPlanner.music_cues(audio_cues)
     sfx_cues = AudioPlanner.sfx_cues(audio_cues)
+
+    # Subtitle timing follows the same planned scene timeline as narration.
+    narration_segments = NarrationPlanner.build_segments(prompt, completed, content_type)
+    subtitle_cues = SubtitlePlanner.build_cues(narration_segments)
+    subtitles_path = output_dir / f"{project_id}.srt"
+    subtitles_path.write_text(SubtitlePlanner.to_srt(subtitle_cues), encoding="utf-8")
 
     output_path = output_dir / f"{project_id}.mp4"
     final_path = FinalRenderer.render(
         scene_paths, str(output_path), voice_over=voice_over_path,
         duration=duration_seconds, width=width, height=height,
+        subtitles_path=str(subtitles_path),
     )
     diagnostics = (
         f"Status: {state.status.value}\n"
@@ -121,6 +127,7 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
         f"Type: {content_type}\n"
         f"Format: {video_format} ({width}x{height})\n"
         f"Audio plan: {len(music_cues)} music cues + {len(sfx_cues)} SFX cues\n"
+        f"Subtitles: {len(subtitle_cues)} scene cues attached\n"
         f"{voice_status}\n"
         f"Project: {project_id}"
     )
