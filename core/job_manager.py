@@ -7,11 +7,15 @@ from pathlib import Path
 from threading import Lock, Thread
 from typing import Callable, Optional
 import json
+import os
 import time
 import uuid
 
 
-JOB_DIR = Path("checkpoints") / "jobs"
+# Render Persistent Disk is mounted at /app/storage. Locally, keep the
+# repository-friendly checkpoints directory unless STORAGE_ROOT is provided.
+STORAGE_ROOT = Path(os.getenv("STORAGE_ROOT", ".")).expanduser()
+JOB_DIR = STORAGE_ROOT / "checkpoints" / "jobs"
 
 
 @dataclass
