@@ -23,9 +23,9 @@ class RunwayProvider:
     TASK_DETAIL_ENDPOINT = "/v1/tasks"
     MODEL = "gen4.5"
     API_VERSION = "2024-11-06"
-    DEFAULT_RATIO = "1280:768"
+    DEFAULT_RATIO = "1280:720"
     DEFAULT_DURATION = 5
-    SUPPORTED_RATIOS = {"1280:768", "768:1280"}
+    SUPPORTED_RATIOS = {"1280:720", "720:1280"}
     MIN_DURATION = 2
     MAX_DURATION = 10
     MAX_PROMPT_LENGTH = 1000
@@ -43,7 +43,6 @@ class RunwayProvider:
             raise VideoGenerationError(f"Unsupported ratio: {ratio}. Supported: {self.SUPPORTED_RATIOS}")
         if duration < self.MIN_DURATION or duration > self.MAX_DURATION:
             raise VideoGenerationError(f"Invalid duration {duration}s. Gen-4.5 supports {self.MIN_DURATION}-{self.MAX_DURATION}s")
-        # Runway promptText has a hard 1000-character API limit.
         prompt = prompt.strip()[: self.MAX_PROMPT_LENGTH]
         try:
             headers = {"Authorization": f"Bearer {self.api_key}", "X-Runway-Version": self.API_VERSION, "Content-Type": "application/json"}
