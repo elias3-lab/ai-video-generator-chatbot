@@ -19,7 +19,11 @@ DURATION_OPTIONS = {
     "4 min": 240,
     "5 min": 300,
 }
+CONTENT_TYPES = ("Documentary", "Film")
+VIDEO_FORMATS = ("YouTube 16:9", "Shorts 9:16")
 DEFAULT_DURATION = "4 min"
+DEFAULT_CONTENT_TYPE = "Documentary"
+DEFAULT_VIDEO_FORMAT = "YouTube 16:9"
 SERVER_NAME = "0.0.0.0"
 SERVER_PORT = 7860
 
@@ -31,19 +35,41 @@ def _duration_seconds(label: str) -> int:
         raise ValueError("Unsupported duration. Choose 30s, 3 min, 4 min, or 5 min.") from exc
 
 
-def create_video(prompt: str, duration_label: str):
-    """Run the existing pipeline and render completed scenes into one MP4."""
+def _content_style(content_type: str) -> str:
+    if content_type == "Documentary":
+        return "cinematic educational documentary, factual visual storytelling, naturalistic performances"
+    if content_type == "Film":
+        return "cinematic narrative film, dramatic visual storytelling, naturalistic performances"
+    raise ValueError("Unsupported content type. Choose Documentary or Film.")
+
+
+def _video_dimensions(video_format: str) -> tuple[int, int]:
+    if video_format == "YouTube 16:9":
+        return 1920, 1080
+    if video_format == "Shorts 9:16":
+        return 1080, 1920
+    raise ValueError("Unsupported video format. Choose YouTube 16:9 or Shorts 9:16.")
+
+
+def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_CONTENT_TYPE, video_format: str = DEFAULT_VIDEO_FORMAT):
+    """Run the pipeline and render completed scenes into one MP4."""
     prompt = (prompt or "").strip()
     if not prompt:
         raise gr.Error("Tell CASTELOU what story to create first.")
 
     duration_seconds = _duration_seconds(duration_label)
+    style = _content_style(content_type)
+    width, height = _video_dimensions(video_format)
     project_id = f"castelou-{uuid.uuid4().hex[:10]}"
     registry = ProviderRegistry()
     orchestrator = PipelineOrchestrator(provider_engine=registry.engine)
 
     def scene_context(scene):
-        return SceneContext(prompt=f"{prompt}\nScene {scene.scene_id}: cinematic documentary coverage.")
+        return SceneContext(
+            prompt=f"{prompt}\nScene {scene.scene_id}: {style}. Cinematic coverage. Output format: {video_format}.",
+            consistency_required=True,
+            visual_priority=0.8,
+        )
 
     state = orchestrator.create_project(project_id, duration_seconds)
     state = orchestrator.run(project_id, scene_context=scene_context)
@@ -55,12 +81,14 @@ def create_video(prompt: str, duration_label: str):
 
     scene_paths = [scene.output_path for scene in completed if scene.output_path]
     output_path = Path("outputs") / f"{project_id}.mp4"
-    final_path = FinalRenderer.render(scene_paths, str(output_path))
+    final_path = FinalRenderer.render(scene_paths, str(output_path), width=width, height=height)
 
     diagnostics = (
         f"Status: {state.status.value}\n"
         f"Completed: {len(completed)} / {len(state.scenes)} scenes\n"
         f"Resume point: {state.resume_from_scene}\n"
+        f"Type: {content_type}\n"
+        f"Format: {video_format} ({width}x{height})\n"
         f"Project: {project_id}"
     )
     if state.status != ProjectStatus.COMPLETED:
@@ -94,28 +122,13 @@ def build_ui() -> gr.Blocks:
 
         with gr.Group(elem_classes=["castelou-card"]):
             gr.Markdown("### Type")
-            content_type = gr.Radio(
-                ["Documentary", "Film"],
-                value="Documentary",
-                label=None,
-                interactive=True,
-            )
+            content_type = gr.Radio(list(CONTENT_TYPES), value=DEFAULT_CONTENT_TYPE, label=None, interactive=True)
 
             gr.Markdown("### Duration")
-            duration = gr.Radio(
-                list(DURATION_OPTIONS.keys()),
-                value=DEFAULT_DURATION,
-                label=None,
-                interactive=True,
-            )
+            duration = gr.Radio(list(DURATION_OPTIONS.keys()), value=DEFAULT_DURATION, label=None, interactive=True)
 
             gr.Markdown("### Format")
-            video_format = gr.Radio(
-                ["YouTube 16:9", "Shorts 9:16"],
-                value="YouTube 16:9",
-                label=None,
-                interactive=True,
-            )
+            video_format = gr.Radio(list(VIDEO_FORMATS), value=DEFAULT_VIDEO_FORMAT, label=None, interactive=True)
 
             prompt = gr.Textbox(
                 label="Prompt",
@@ -126,11 +139,11 @@ def build_ui() -> gr.Blocks:
             create = gr.Button("CREATE VIDEO", variant="primary", elem_id="create")
 
         video = gr.Video(label="Final MP4", autoplay=False)
-        diagnostics = gr.Textbox(label="Pipeline Diagnostics", lines=7, interactive=False)
+        diagnostics = gr.Textbox(label="Pipeline Diagnostics", lines=9, interactive=False)
 
         create.click(
             fn=create_video,
-            inputs=[prompt, duration],
+            inputs=[prompt, duration, content_type, video_format],
             outputs=[video, diagnostics],
         )
 
