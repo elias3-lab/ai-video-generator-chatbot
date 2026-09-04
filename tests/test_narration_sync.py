@@ -11,7 +11,8 @@ from core.subtitles import SubtitlePlanner
 @dataclass
 class FakeScene:
     scene_id: str
-    duration_seconds: int
+    duration_seconds: int | None = None
+    target_duration: int | None = None
 
 
 def test_probe_audio_duration_returns_measured_float(tmp_path, monkeypatch):
@@ -73,6 +74,12 @@ def test_concatenate_audio_segments_writes_ordered_manifest(tmp_path, monkeypatc
         f"file '{second.resolve()}'",
     ]
     assert not output.with_suffix(".concat.txt").exists()
+
+
+def test_narration_uses_scene_target_duration_when_duration_seconds_is_absent():
+    scenes = [FakeScene("s1", target_duration=10), FakeScene("s2", target_duration=20)]
+    planned = NarrationPlanner.build_segments("test story", scenes)
+    assert [segment.duration_seconds for segment in planned] == [10.0, 20.0]
 
 
 def test_generate_voice_over_uses_measured_scene_durations(monkeypatch, tmp_path):
