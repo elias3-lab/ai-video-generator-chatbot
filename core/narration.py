@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Sequence
+
+from utils.errors import AudioProcessingError
 
 
 @dataclass(frozen=True)
@@ -16,12 +21,17 @@ class NarrationSegment:
     text: str
 
 
-class NarrationPlanner:
-    """Create a deterministic first-pass narration script from scene plans.
+@dataclass(frozen=True)
+class NarrationAudioSegment:
+    """Generated audio for one narration segment with measured duration."""
 
-    This is intentionally provider-agnostic: a future LLM Director can replace
-    the text generation while keeping the same segment contract for TTS.
-    """
+    segment: NarrationSegment
+    path: str
+    duration_seconds: float
+
+
+class NarrationPlanner:
+    """Create deterministic first-pass narration and audio timing."""
 
     @staticmethod
     def build_segments(prompt: str, scenes: Sequence[object], content_type: str = "Documentary") -> list[NarrationSegment]:
@@ -61,7 +71,51 @@ class NarrationPlanner:
 
     @staticmethod
     def join(segments: Sequence[NarrationSegment]) -> str:
-        """Join scene narration into the single TTS track used by the renderer."""
         if not segments:
             raise ValueError("Cannot join an empty narration")
         return " ".join(segment.text for segment in segments)
+
+
+def probe_audio_duration(path: str) -> float:
+    """Measure an audio file using ffprobe without decoding the complete file."""
+    if not os.path.exists(path):
+        raise AudioProcessingError(f"Audio file not found: {path}")
+    command = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise AudioProcessingError(f"Unable to measure audio duration: {result.stderr[:300]}")
+    try:
+        duration = float(result.stdout.strip())
+    except ValueError as exc:
+        raise AudioProcessingError(f"Invalid audio duration returned for {path}") from exc
+    if duration <= 0:
+        raise AudioProcessingError(f"Audio duration must be positive: {path}")
+    return duration
+
+
+def concatenate_audio_segments(segments: Sequence[NarrationAudioSegment], output_path: str) -> str:
+    """Concatenate generated scene audio in order and return the final track path."""
+    if not segments:
+        raise AudioProcessingError("Cannot concatenate empty narration audio")
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    manifest = output.with_suffix(".concat.txt")
+    try:
+        lines = []
+        for item in segments:
+            path = Path(item.path).resolve()
+            if not path.exists():
+                raise AudioProcessingError(f"Narration audio does not exist: {path}")
+            safe_path = str(path).replace("'", "'\\''")
+            lines.append(f"file '{safe_path}'")
+        manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        command = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(manifest), "-c:a", "libmp3lame", "-b:a", "128k", str(output)]
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise AudioProcessingError(f"Narration concatenation failed: {result.stderr[:300]}")
+        if not output.exists() or output.stat().st_size == 0:
+            raise AudioProcessingError("Narration concatenation produced no audio")
+        return str(output)
+    finally:
+        if manifest.exists():
+            manifest.unlink()
