@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     pixabay_api_key: str = Field(default="", alias="PIXABAY_API_KEY")
 
     # Local Kokoro narration
-    kokoro_voice: str = Field(default="af_sarah", alias="KOKORO_VOICE")
+    kokoro_voice: str = Field(default="am_michael", alias="KOKORO_VOICE")
     kokoro_speed: float = Field(default=1.0, alias="KOKORO_SPEED")
 
     # Content / Voice Languages
@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     @validator("default_language")
     def validate_language(cls, v):
         if v not in cls.model_fields["supported_languages"].default:
-            raise ValueError("DEFAULT_LANGUAGE must be one of: en, ar, fr, de")
+            raise ValueError("DEFAULT_LANGUAGE must be one of: en, fr, de, ar")
         return v
 
     @validator("voice_over_volume", "background_music_volume")
