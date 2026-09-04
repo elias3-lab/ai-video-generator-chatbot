@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -11,8 +12,10 @@ from .project_state import ProjectState
 class CheckpointStore:
     """Save and load project checkpoints as JSON files."""
 
-    def __init__(self, root_dir: str | Path = "projects") -> None:
-        self.root_dir = Path(root_dir)
+    def __init__(self, root_dir: str | Path | None = None) -> None:
+        # On Render, STORAGE_ROOT points at the Persistent Disk. Locally this
+        # remains the repository's projects/ directory.
+        self.root_dir = Path(root_dir or os.getenv("PROJECTS_DIR", "projects")).expanduser()
         self.root_dir.mkdir(parents=True, exist_ok=True)
 
     def path_for(self, project_id: str) -> Path:
