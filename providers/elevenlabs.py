@@ -22,6 +22,7 @@ class ElevenLabsProvider:
     TTS_ENDPOINT = "/v1/text-to-speech"
     DEFAULT_MODEL = "eleven_multilingual_v2"
     DEFAULT_OUTPUT_FORMAT = "mp3_44100_128"
+    FREE_FALLBACK_VOICE_ID = "pNInz6obpgDQGcFmaJgB"
 
     def __init__(self, voice_id: Optional[str] = None):
         self.api_key = settings.elevenlabs_api_key
@@ -48,6 +49,18 @@ class ElevenLabsProvider:
             )
         return language
 
+    def _request_tts(self, text: str, voice_id: str, model_id: str, output_format: str, language: str):
+        headers = {
+            "xi-api-key": self.api_key,
+            "Content-Type": "application/json",
+        }
+        payload = {"text": text, "model_id": model_id}
+        endpoint = f"{self.TTS_ENDPOINT}/{voice_id}"
+        params = {"output_format": output_format}
+        if model_id != self.DEFAULT_MODEL:
+            params["language_code"] = language
+        return self.client.post(endpoint, headers=headers, json=payload, params=params)
+
     def generate_voice_over(
         self,
         text: str,
@@ -61,37 +74,31 @@ class ElevenLabsProvider:
             raise VoiceOverGenerationError("Text cannot be empty")
 
         language = self.validate_language(language or settings.default_language)
-        voice_id = voice_id or self.voice_id
+        selected_voice = voice_id or self.voice_id
         model_id = model_id or self.DEFAULT_MODEL
         output_format = output_format or self.DEFAULT_OUTPUT_FORMAT
-
-        headers = {
-            "xi-api-key": self.api_key,
-            "Content-Type": "application/json",
-        }
-        payload = {"text": text, "model_id": model_id}
-        endpoint = f"{self.TTS_ENDPOINT}/{voice_id}"
-        params = {"output_format": output_format}
-        # eleven_multilingual_v2 determines language from the supplied text.
-        # Do not send language_code for this model because the official API
-        # does not support that parameter with multilingual_v2.
-        if model_id != self.DEFAULT_MODEL:
-            params["language_code"] = language
 
         try:
             logger.info(
                 "ElevenLabs TTS: language=%s model=%s voice=%s chars=%s",
                 language,
                 model_id,
-                voice_id,
+                selected_voice,
                 len(text),
             )
-            response = self.client.post(
-                endpoint,
-                headers=headers,
-                json=payload,
-                params=params,
-            )
+            response = self._request_tts(text, selected_voice, model_id, output_format, language)
+
+            # ElevenLabs returns 402 for Voice Library voices on free API plans.
+            # Retry once with the legacy premade Adam voice, which is not a
+            # community Voice Library voice and is suitable as a free-plan fallback.
+            if response.status_code == 402 and selected_voice != self.FREE_FALLBACK_VOICE_ID:
+                logger.warning(
+                    "Configured ElevenLabs voice is not available on the current plan; "
+                    "falling back to a premade voice."
+                )
+                selected_voice = self.FREE_FALLBACK_VOICE_ID
+                response = self._request_tts(text, selected_voice, model_id, output_format, language)
+
             if response.status_code != 200:
                 raise VoiceOverGenerationError(
                     f"ElevenLabs API error: {response.status_code} - "
