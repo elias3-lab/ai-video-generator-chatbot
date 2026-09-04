@@ -10,6 +10,7 @@ import gradio as gr
 
 from config import settings
 from core.audio_plan import AudioPlanner
+from core.director import DirectorPlanner
 from core.final_render import FinalRenderer
 from core.narration import NarrationAudioSegment, NarrationPlanner, concatenate_audio_segments, probe_audio_duration
 from core.orchestrator import PipelineOrchestrator
@@ -85,7 +86,7 @@ def _failure_reason(state) -> str:
 
 
 def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_CONTENT_TYPE, video_format: str = DEFAULT_VIDEO_FORMAT):
-    """Run the pipeline, generate scene-aware audio/subtitles, and render the final MP4."""
+    """Run the full pipeline, generate scene-aware audio/subtitles, and render MP4."""
     prompt = (prompt or "").strip()
     if not prompt:
         raise gr.Error("Tell CASTELOU what story to create first.")
@@ -95,8 +96,21 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
     project_id = f"castelou-{uuid.uuid4().hex[:10]}"
     registry = ProviderRegistry()
     orchestrator = PipelineOrchestrator(provider_engine=registry.engine)
+
     def scene_context(scene):
-        return SceneContext(prompt=f"{prompt}\nScene {scene.scene_id}: {style}. Cinematic coverage. Output format: {video_format}.", consistency_required=True, visual_priority=0.8)
+        director_prompt = DirectorPlanner.visual_prompt(
+            prompt,
+            scene.order,
+            len(orchestrator.checkpoints.resume(project_id).scenes),
+            style,
+            orchestrator.visual_dna.prompt_prefix(),
+        )
+        return SceneContext(
+            prompt=f"{director_prompt} Output format: {video_format}.",
+            consistency_required=True,
+            visual_priority=0.8,
+        )
+
     state = orchestrator.create_project(project_id, duration_seconds)
     state = orchestrator.run(project_id, scene_context=scene_context)
     completed = [scene for scene in state.scenes if scene.status.value == "completed" and scene.output_path]
@@ -114,10 +128,11 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
     subtitles_path.write_text(SubtitlePlanner.to_srt(subtitle_cues), encoding="utf-8")
     output_path = output_dir / f"{project_id}.mp4"
     final_path = FinalRenderer.render(scene_paths, str(output_path), voice_over=voice_over_path, duration=duration_seconds, width=width, height=height, subtitles_path=str(subtitles_path))
-    diagnostics = (f"Status: {state.status.value}\n" f"Completed: {len(completed)} / {len(state.scenes)} scenes\n" f"Resume point: {state.resume_from_scene}\n" f"Type: {content_type}\n" f"Format: {video_format} ({width}x{height})\n" f"Audio plan: {len(music_cues)} music cues + {len(sfx_cues)} SFX cues\n" f"Subtitles: {len(subtitle_cues)} measured narration cues attached\n" f"{voice_status}\n" f"Project: {project_id}")
+    diagnostics = (f"Status: {state.status.value}\n" f"Completed: {len(completed)} / {len(state.scenes)} scenes\n" f"Resume point: {state.resume_from_scene}\n" f"Type: {content_type}\n" f"Format: {video_format} ({width}x{height})\n" f"Director: Hook → Journey → Discovery → Ending\n" f"Audio plan: {len(music_cues)} music cues + {len(sfx_cues)} SFX cues\n" f"Subtitles: {len(subtitle_cues)} measured narration cues attached\n" f"{voice_status}\n" f"Project: {project_id}")
     if state.status != ProjectStatus.COMPLETED:
         diagnostics += "\n\nRecovery: resume from the saved checkpoint."
     return final_path, diagnostics
+
 
 CSS = """
 :root { --castelou-gold: #b9975b; --castelou-bg: #0b0b0d; }
@@ -147,6 +162,7 @@ def build_ui() -> gr.Blocks:
         diagnostics = gr.Textbox(label="Pipeline Diagnostics", lines=9, interactive=False)
         create.click(fn=create_video, inputs=[prompt, duration, content_type, video_format], outputs=[video, diagnostics])
     return demo
+
 
 if __name__ == "__main__":
     build_ui().launch(server_name=SERVER_NAME, server_port=SERVER_PORT)
