@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import uuid
 
@@ -10,7 +11,7 @@ import gradio as gr
 from config import settings
 from core.audio_plan import AudioPlanner
 from core.final_render import FinalRenderer
-from core.narration import NarrationPlanner
+from core.narration import NarrationAudioSegment, NarrationPlanner, concatenate_audio_segments, probe_audio_duration
 from core.orchestrator import PipelineOrchestrator
 from core.project_state import ProjectStatus
 from core.subtitles import SubtitlePlanner
@@ -51,16 +52,27 @@ def _video_dimensions(video_format: str) -> tuple[int, int]:
     raise ValueError("Unsupported video format. Choose YouTube 16:9 or Shorts 9:16.")
 
 
-def _generate_voice_over(prompt: str, content_type: str, scenes, output_path: str) -> tuple[str | None, str]:
-    """Generate one scene-aware narration track when ElevenLabs is configured."""
+def _generate_voice_over(prompt: str, content_type: str, scenes, output_path: str) -> tuple[str | None, str, list]:
+    """Generate one TTS track per scene, measure durations, then concatenate in order."""
+    planned = NarrationPlanner.build_segments(prompt, scenes, content_type)
     if not settings.elevenlabs_api_key:
-        return None, "Voice-over: skipped (ELEVENLABS_API_KEY not configured)."
+        return None, "Voice-over: skipped (ELEVENLABS_API_KEY not configured).", planned
     if not settings.elevenlabs_voice_id:
-        return None, "Voice-over: skipped (ELEVENLABS_VOICE_ID not configured)."
-    segments = NarrationPlanner.build_segments(prompt, scenes, content_type)
-    script = NarrationPlanner.join(segments)
-    ElevenLabsProvider().generate_voice_over(script, output_path, language=settings.default_language)
-    return output_path, f"Voice-over: generated with ElevenLabs ({len(segments)} scene segments)."
+        return None, "Voice-over: skipped (ELEVENLABS_VOICE_ID not configured).", planned
+    provider = ElevenLabsProvider()
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    generated: list[NarrationAudioSegment] = []
+    for segment in planned:
+        scene_path = output.parent / f"{output.stem}_{segment.order:03d}.mp3"
+        provider.generate_voice_over(segment.text, str(scene_path), language=settings.default_language)
+        measured = probe_audio_duration(str(scene_path))
+        generated.append(NarrationAudioSegment(segment, str(scene_path), measured))
+    concatenate_audio_segments(generated, str(output))
+    measured_segments = [replace(item.segment, duration_seconds=item.duration_seconds) for item in generated]
+    total_duration = sum(item.duration_seconds for item in generated)
+    status = f"Voice-over: generated with ElevenLabs ({len(generated)} scene tracks, {total_duration:.1f}s measured)."
+    return str(output), status, measured_segments
 
 
 def _failure_reason(state) -> str:
@@ -83,58 +95,29 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
     project_id = f"castelou-{uuid.uuid4().hex[:10]}"
     registry = ProviderRegistry()
     orchestrator = PipelineOrchestrator(provider_engine=registry.engine)
-
     def scene_context(scene):
-        return SceneContext(
-            prompt=f"{prompt}\nScene {scene.scene_id}: {style}. Cinematic coverage. Output format: {video_format}.",
-            consistency_required=True,
-            visual_priority=0.8,
-        )
-
+        return SceneContext(prompt=f"{prompt}\nScene {scene.scene_id}: {style}. Cinematic coverage. Output format: {video_format}.", consistency_required=True, visual_priority=0.8)
     state = orchestrator.create_project(project_id, duration_seconds)
     state = orchestrator.run(project_id, scene_context=scene_context)
     completed = [scene for scene in state.scenes if scene.status.value == "completed" and scene.output_path]
     if not completed:
         raise gr.Error(f"VIDEO GENERATION PAUSED\n{_failure_reason(state)}")
-
     scene_paths = [scene.output_path for scene in completed if scene.output_path]
     output_dir = Path(settings.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    voice_over_path, voice_status = _generate_voice_over(
-        prompt, content_type, completed, str(output_dir / f"{project_id}_voice.mp3")
-    )
-
+    voice_over_path, voice_status, narration_segments = _generate_voice_over(prompt, content_type, completed, str(output_dir / f"{project_id}_voice.mp3"))
     audio_cues = AudioPlanner.build_cues(completed, content_type=content_type)
     music_cues = AudioPlanner.music_cues(audio_cues)
     sfx_cues = AudioPlanner.sfx_cues(audio_cues)
-
-    # Subtitle timing follows the same planned scene timeline as narration.
-    narration_segments = NarrationPlanner.build_segments(prompt, completed, content_type)
     subtitle_cues = SubtitlePlanner.build_cues(narration_segments)
     subtitles_path = output_dir / f"{project_id}.srt"
     subtitles_path.write_text(SubtitlePlanner.to_srt(subtitle_cues), encoding="utf-8")
-
     output_path = output_dir / f"{project_id}.mp4"
-    final_path = FinalRenderer.render(
-        scene_paths, str(output_path), voice_over=voice_over_path,
-        duration=duration_seconds, width=width, height=height,
-        subtitles_path=str(subtitles_path),
-    )
-    diagnostics = (
-        f"Status: {state.status.value}\n"
-        f"Completed: {len(completed)} / {len(state.scenes)} scenes\n"
-        f"Resume point: {state.resume_from_scene}\n"
-        f"Type: {content_type}\n"
-        f"Format: {video_format} ({width}x{height})\n"
-        f"Audio plan: {len(music_cues)} music cues + {len(sfx_cues)} SFX cues\n"
-        f"Subtitles: {len(subtitle_cues)} scene cues attached\n"
-        f"{voice_status}\n"
-        f"Project: {project_id}"
-    )
+    final_path = FinalRenderer.render(scene_paths, str(output_path), voice_over=voice_over_path, duration=duration_seconds, width=width, height=height, subtitles_path=str(subtitles_path))
+    diagnostics = (f"Status: {state.status.value}\n" f"Completed: {len(completed)} / {len(state.scenes)} scenes\n" f"Resume point: {state.resume_from_scene}\n" f"Type: {content_type}\n" f"Format: {video_format} ({width}x{height})\n" f"Audio plan: {len(music_cues)} music cues + {len(sfx_cues)} SFX cues\n" f"Subtitles: {len(subtitle_cues)} measured narration cues attached\n" f"{voice_status}\n" f"Project: {project_id}")
     if state.status != ProjectStatus.COMPLETED:
         diagnostics += "\n\nRecovery: resume from the saved checkpoint."
     return final_path, diagnostics
-
 
 CSS = """
 :root { --castelou-gold: #b9975b; --castelou-bg: #0b0b0d; }
@@ -164,7 +147,6 @@ def build_ui() -> gr.Blocks:
         diagnostics = gr.Textbox(label="Pipeline Diagnostics", lines=9, interactive=False)
         create.click(fn=create_video, inputs=[prompt, duration, content_type, video_format], outputs=[video, diagnostics])
     return demo
-
 
 if __name__ == "__main__":
     build_ui().launch(server_name=SERVER_NAME, server_port=SERVER_PORT)
