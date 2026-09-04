@@ -116,8 +116,11 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
 
     state = orchestrator.run(project_id, scene_context=scene_context)
     completed = [scene for scene in state.scenes if scene.status.value == "completed" and scene.output_path]
-    if not completed:
-        raise gr.Error(f"VIDEO GENERATION PAUSED\n{_failure_reason(state)}")
+    if len(completed) != len(state.scenes):
+        raise gr.Error(
+            f"VIDEO GENERATION PAUSED\n{_failure_reason(state)}\n\n"
+            f"Completed {len(completed)} / {len(state.scenes)} scenes. Resume from the saved checkpoint."
+        )
     scene_paths = [scene.output_path for scene in completed if scene.output_path]
     output_dir = Path(settings.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -131,8 +134,6 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
     output_path = output_dir / f"{project_id}.mp4"
     final_path = FinalRenderer.render(scene_paths, str(output_path), voice_over=voice_over_path, duration=duration_seconds, width=width, height=height, subtitles_path=str(subtitles_path))
     diagnostics = (f"Status: {state.status.value}\n" f"Completed: {len(completed)} / {len(state.scenes)} scenes\n" f"Resume point: {state.resume_from_scene}\n" f"Type: {content_type}\n" f"Format: {video_format} ({width}x{height})\n" f"Director: Hook → Journey → Discovery → Ending\n" f"Audio plan: {len(music_cues)} music cues + {len(sfx_cues)} SFX cues\n" f"Subtitles: {len(subtitle_cues)} measured narration cues attached\n" f"{voice_status}\n" f"Project: {project_id}")
-    if state.status != ProjectStatus.COMPLETED:
-        diagnostics += "\n\nRecovery: resume from the saved checkpoint."
     return final_path, diagnostics
 
 
