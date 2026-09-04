@@ -164,7 +164,7 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
 
     try:
         voice_over_path, voice_status, narration_segments = _generate_voice_over(
-            prompt, content_type, completed, str(output_dir / f"{project_id}_voice.wav")
+            prompt, content_type, completed, str(output_dir / f"{project_id}_voice.mp3")
         )
         audio_cues = AudioPlanner.build_cues(completed, content_type=content_type)
         music_cues = AudioPlanner.music_cues(audio_cues)
