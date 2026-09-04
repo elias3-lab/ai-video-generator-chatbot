@@ -43,7 +43,12 @@ class NarrationPlanner:
         total = len(scenes)
         for index, scene in enumerate(scenes, start=1):
             scene_id = str(scene.scene_id)
-            duration = float(scene.duration_seconds)
+            raw_duration = getattr(scene, "duration_seconds", None)
+            if raw_duration is None:
+                raw_duration = getattr(scene, "target_duration", None)
+            if raw_duration is None:
+                raise ValueError(f"Scene {scene_id} has no planned duration")
+            duration = float(raw_duration)
             if duration <= 0:
                 raise ValueError("Scene duration must be positive")
             if content_type == "Documentary":
