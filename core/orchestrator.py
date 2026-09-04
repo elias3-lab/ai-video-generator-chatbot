@@ -7,7 +7,7 @@ from typing import Callable, Optional, Sequence
 
 from .checkpoint_store import CheckpointStore
 from .dropbox_storage import storage
-from .project_state import ProjectState, SceneState, ProjectStatus
+from .project_state import ProjectState, SceneState, ProjectStatus, SceneStatus
 from .scene_decision import SceneContext, decide_scene_media
 from .provider_engine import ProviderEngine
 from .provider_fallback import run_with_fallback
@@ -44,14 +44,17 @@ class PipelineOrchestrator:
         self.checkpoints.save(state)
         return state
 
-    def _restore_scene_asset(self, project_id: str, scene: SceneState) -> None:
-        if not storage.enabled or not scene.output_path:
-            return
+    def _restore_scene_asset(self, project_id: str, scene: SceneState) -> bool:
+        """Restore a completed scene asset, returning whether it is available locally."""
+        if not scene.output_path:
+            return False
         from pathlib import Path
         local = Path(scene.output_path)
         if local.exists():
-            return
-        storage.download_file(f"projects/{project_id}/scenes/{scene.scene_id}/{local.name}", local)
+            return True
+        if not storage.enabled:
+            return False
+        return storage.download_file(f"projects/{project_id}/scenes/{scene.scene_id}/{local.name}", local)
 
     def _persist_scene_asset(self, project_id: str, scene: SceneState) -> None:
         if storage.enabled and scene.output_path:
@@ -71,9 +74,18 @@ class PipelineOrchestrator:
 
         for scene in state.scenes:
             if scene.status.value == "completed":
-                self._restore_scene_asset(project_id, scene)
-                continuity.mark_completed(scene.scene_id, location=scene.location_ref, characters=scene.character_refs)
-                continue
+                if self._restore_scene_asset(project_id, scene):
+                    continuity.mark_completed(scene.scene_id, location=scene.location_ref, characters=scene.character_refs)
+                    continue
+                # A checkpoint must never make a missing asset look completed.
+                # If the local file and persistent copy are both unavailable,
+                # put the scene back into the normal generation path.
+                scene.status = SceneStatus.PENDING
+                scene.error_message = "Completed scene asset is unavailable; regenerating scene."
+                state.resume_from_scene = scene.scene_id
+                state.current_scene = scene.scene_id
+                state.status = ProjectStatus.RUNNING
+                self.checkpoints.save(state)
 
             context = scene_context(scene) if scene_context else SceneContext(prompt=scene.prompt or scene.scene_id)
             decision = decide_scene_media(context)
