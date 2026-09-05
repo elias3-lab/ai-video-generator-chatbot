@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -58,8 +59,21 @@ class ProviderRegistry:
         provider.validate_video(str(output))
         return SceneResult(output_path=str(output), media_mode="ai_video", provider="runway")
 
+    @staticmethod
+    def _stock_query(scene: Any) -> str:
+        text = str(getattr(scene, "prompt", "") or "").strip()
+        if not text:
+            return str(getattr(scene, "scene_id", "documentary"))
+        match = re.search(r"(?i)\bScene subject:\s*(.+?)(?:\.|$)", text)
+        if match:
+            return match.group(1).strip()
+        return text
+
     def _free_media(self, *, scene: Any) -> SceneResult:
-        query = scene.prompt or scene.scene_id
+        # Stock search must never receive the complete production prompt.
+        # It gets only the scene subject, preventing unrelated results such as
+        # Sudan footage or musicians from leaking into a Tunisia story.
+        query = self._stock_query(scene)
         output = self._output_path(f"{scene.scene_id}_stock.mp4")
         asset, path = self.media_search.search_and_download(
             query, output, target_duration=getattr(scene, "target_duration", None)
@@ -69,6 +83,6 @@ class ProviderRegistry:
             asset_id=asset.asset_id,
             asset_metadata=asset.metadata(),
             media_mode="free_media",
-            decision_reason="Free stock media selected/downloaded.",
+            decision_reason=f"Free stock media selected for scene subject: {query}.",
             provider="free_media",
         )
