@@ -175,10 +175,6 @@ def _run_project(project_id: str, prompt: str, duration_label: str, content_type
     return final_path, diagnostics
 
 
-def _create_video_sync(project_id: str, prompt: str, duration_label: str, content_type: str, video_format: str, progress=None):
-    return _run_project(project_id, prompt, duration_label, content_type, video_format, progress)
-
-
 def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_CONTENT_TYPE, video_format: str = DEFAULT_VIDEO_FORMAT):
     prompt = (prompt or "").strip()
     if not prompt:
@@ -243,6 +239,30 @@ def check_video_job(job_id: str):
     return None, _format_job(job), None
 
 
+def completed_video_choices():
+    """Return persisted completed videos for display whenever the app opens."""
+    choices = []
+    for job in list_video_jobs(50):
+        if job.status != "completed" or not job.project_id or not job.video_path:
+            continue
+        if _restore_final_video(job.project_id, job.video_path):
+            label = f"{job.job_id} — {job.project_id}"
+            choices.append((label, job.job_id))
+    return gr.update(choices=choices, value=choices[0][1] if choices else None)
+
+
+def load_completed_video(job_id: str):
+    normalized = (job_id or "").strip()
+    if not normalized:
+        return None, "Select a completed video first."
+    job = get_video_job(normalized)
+    if job.status != "completed" or not job.video_path or not job.project_id:
+        return None, f"Job {normalized} is not a completed video."
+    if not _restore_final_video(job.project_id, job.video_path):
+        return None, "The completed video is recorded, but its persisted MP4 could not be restored from Dropbox."
+    return job.video_path, _format_job(job)
+
+
 def recent_resumable_jobs():
     jobs = [job for job in list_video_jobs(20) if job.project_id and job.status in {"failed", "queued", "running"}]
     if not jobs:
@@ -275,13 +295,20 @@ with gr.Blocks(title="CASTELOU AI Documentary Studio", css=CSS) as demo:
         with gr.Row():
             check_btn = gr.Button("🔄 Check / Refresh")
             resume_btn = gr.Button("▶️ Resume Job")
+        completed_video = gr.Dropdown(label="Completed Videos — saved history", choices=[], interactive=True)
+        with gr.Row():
+            load_completed_btn = gr.Button("▶️ Open Saved Video")
+            refresh_completed_btn = gr.Button("🔄 Refresh History")
         recent_output = gr.Markdown()
         timer = gr.Timer(5)
 
     create_btn.click(create_video, inputs=[prompt, duration, content_type, video_format], outputs=[video_output, status_output, recent_output, job_id])
     check_btn.click(check_video_job, inputs=job_id, outputs=[video_output, status_output, recent_output])
     resume_btn.click(resume_video, inputs=job_id, outputs=status_output)
+    load_completed_btn.click(load_completed_video, inputs=completed_video, outputs=[video_output, status_output])
+    refresh_completed_btn.click(completed_video_choices, outputs=completed_video)
     timer.tick(check_video_job, inputs=job_id, outputs=[video_output, status_output, recent_output])
+    demo.load(completed_video_choices, outputs=completed_video)
 
 
 if __name__ == "__main__":
