@@ -7,6 +7,7 @@ from pathlib import Path
 from threading import Lock, Thread
 from typing import Callable, Optional
 import json
+import logging
 import os
 import time
 import uuid
@@ -15,6 +16,7 @@ from .dropbox_storage import storage
 
 STORAGE_ROOT = Path(os.getenv("STORAGE_ROOT", ".")).expanduser()
 JOB_DIR = STORAGE_ROOT / "checkpoints" / "jobs"
+LOGGER = logging.getLogger("castelou.job_manager")
 
 
 @dataclass
@@ -61,15 +63,23 @@ def _save(job: VideoJob) -> None:
     tmp.write_text(json.dumps(asdict(job), indent=2), encoding="utf-8")
     tmp.replace(destination)
     if storage.enabled:
-        stored = storage.upload_file(destination, _remote(job.job_id))
-        if not stored:
-            raise RuntimeError("Dropbox persistence is enabled but the job checkpoint could not be uploaded.")
+        try:
+            stored = storage.upload_file(destination, _remote(job.job_id))
+            if not stored:
+                LOGGER.warning("Dropbox persistence returned no path for job %s; keeping local checkpoint", job.job_id)
+        except Exception as exc:
+            # Dropbox must never take the web UI down. Keep the local checkpoint
+            # usable and surface the persistence problem in logs/status instead.
+            LOGGER.warning("Dropbox checkpoint upload failed for %s: %s", job.job_id, exc)
 
 
 def _load(job_id: str) -> Optional[VideoJob]:
     source = _path(job_id)
     if not source.exists() and storage.enabled:
-        storage.download_file(_remote(job_id), source)
+        try:
+            storage.download_file(_remote(job_id), source)
+        except Exception as exc:
+            LOGGER.warning("Dropbox checkpoint download failed for %s: %s", job_id, exc)
     if not source.exists():
         return None
     try:
@@ -81,9 +91,14 @@ def _load(job_id: str) -> Optional[VideoJob]:
 def _load_all() -> list[VideoJob]:
     JOB_DIR.mkdir(parents=True, exist_ok=True)
     if storage.enabled:
-        for remote in storage.list_files("jobs"):
-            if remote.startswith("jobs/") and remote.endswith(".json"):
-                _load(Path(remote).stem)
+        try:
+            for remote in storage.list_files("jobs"):
+                if remote.startswith("jobs/") and remote.endswith(".json"):
+                    _load(Path(remote).stem)
+        except Exception as exc:
+            # A revoked/expired Dropbox token must not prevent Gradio from
+            # starting. Local jobs remain available until persistence is fixed.
+            LOGGER.warning("Dropbox job listing unavailable; using local jobs only: %s", exc)
     jobs: list[VideoJob] = []
     for source in JOB_DIR.glob("*.json"):
         try:
