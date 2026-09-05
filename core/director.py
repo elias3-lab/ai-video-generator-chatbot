@@ -17,12 +17,7 @@ class DirectorBeat:
 
 
 class DirectorPlanner:
-    """Turn a user idea into scene-specific cinematic direction.
-
-    The important rule here is that every scene receives a different piece of
-    the actual story content. The original request is treated as input data,
-    not as a video prompt to repeat for every shot.
-    """
+    """Turn a user idea into scene-specific cinematic direction."""
 
     BEATS = ("Hook", "Journey", "Discovery", "Ending")
     CAMERAS = (
@@ -60,12 +55,32 @@ class DirectorPlanner:
         return DirectorBeat(order, name, objectives[name], cls.CAMERAS[index], pacing[name])
 
     @staticmethod
-    def _story_subjects(story: str) -> list[str]:
-        text = re.sub(r"\s+", " ", (story or "").strip())
+    def _clean(text: str) -> str:
+        return re.sub(r"\s+", " ", (text or "").strip()).strip(" .")
+
+    @classmethod
+    def _location_anchor(cls, story: str) -> str:
+        text = cls._clean(story)
+        match = re.search(r"(?i)\babout\s+the\s+(.+?)(?:\.|$)", text)
+        if match:
+            subject = match.group(1).strip()
+            # Keep geographic phrases intact; they are valuable search anchors.
+            location_words = re.findall(
+                r"(?i)\b(?:Tunisia|Tunis|Sidi Bou Said|Djerba|Kairouan|Carthage|Mediterranean|Morocco|Egypt|Algeria|Turkey|India|Japan|Italy|France|Spain|Portugal|Greece)\b",
+                subject,
+            )
+            if location_words:
+                return location_words[0]
+        for name in ("Tunisia", "Tunis", "Sidi Bou Said", "Djerba", "Kairouan", "Carthage"):
+            if re.search(rf"(?i)\b{re.escape(name)}\b", text):
+                return name
+        return ""
+
+    @classmethod
+    def _story_subjects(cls, story: str) -> list[str]:
+        text = cls._clean(story)
         if not text:
             return []
-
-        # Prefer explicit visual content introduced by Show/Include/Featuring.
         match = re.search(r"(?i)\b(?:show|showing|include|including|featuring|cover)\s+(.+?)(?:\.|$)", text)
         if match:
             raw = match.group(1)
@@ -73,15 +88,11 @@ class DirectorPlanner:
             subjects = [p for p in parts if p]
             if subjects:
                 return subjects
-
-        # Otherwise use the sentence after "about" as the main subject.
         match = re.search(r"(?i)\babout\s+(.+?)(?:\.|$)", text)
         if match:
             subject = match.group(1).strip(" .")
             if subject:
                 return [subject]
-
-        # Fallback: split ordinary sentences and ignore obvious production instructions.
         sentences = [s.strip(" .") for s in re.split(r"[.!?]", text) if s.strip()]
         blocked = re.compile(r"(?i)^(?:realistic|cinematic|natural lighting|consistent|smooth camera|english narration|voice-over|voiceover)")
         return [s for s in sentences if not blocked.search(s)] or [text]
@@ -91,30 +102,32 @@ class DirectorPlanner:
         subjects = cls._story_subjects(story)
         if not subjects:
             raise ValueError("Director requires story content")
-        index = min(len(subjects) - 1, ((order - 1) * len(subjects)) // max(1, total))
-        start = index
-        end = min(len(subjects), ((order) * len(subjects) + total - 1) // max(1, total))
-        selected = subjects[start:end] or [subjects[index]]
+        n = len(subjects)
+        start = ((order - 1) * n) // max(1, total)
+        end = (order * n) // max(1, total)
+        if order == total:
+            end = n
+        end = max(start + 1, min(n, end))
+        selected = subjects[start:end]
+        anchor = cls._location_anchor(story)
+        if anchor and not re.search(rf"(?i)\b{re.escape(anchor)}\b", ", ".join(selected)):
+            return f"{anchor}: {', '.join(selected)}"
         return ", ".join(selected)
 
     @classmethod
-    def visual_prompt(
-        cls,
-        story: str,
-        order: int,
-        total: int,
-        style: str,
-        visual_dna: str = "",
-    ) -> str:
+    def visual_prompt(cls, story: str, order: int, total: int, style: str, visual_dna: str = "") -> str:
         beat = cls.beat_for(order, total)
         subject = cls.scene_subject(story, order, total)
+        anchor = cls._location_anchor(story)
+        location = f" Location anchor: {anchor}." if anchor else ""
         dna = f" Visual DNA: {visual_dna.strip()}." if visual_dna.strip() else ""
         return (
-            f"{beat.name} beat. {beat.objective}. Scene subject: {subject}. "
-            f"{style.strip()}. {beat.camera}. Pacing: {beat.pacing}. "
-            "Show only visuals directly related to the scene subject. "
+            f"{beat.name} beat. {beat.objective}. Scene subject: {subject}."
+            f"{location} {style.strip()}. {beat.camera}. Pacing: {beat.pacing}. "
+            "Show only visuals directly related to the scene subject and location anchor. "
             "Cinematic documentary realism, natural light, physically plausible motion, "
-            "consistent geography and visual language, no unrelated locations, no unrelated people, "
+            "consistent geography and visual language, authentic local architecture and culture, "
+            "no unrelated locations, no unrelated countries, no unrelated people, "
             "no musicians unless the scene subject explicitly asks for them, no text, no logos, no watermarks."
             f"{dna}"
         )
@@ -124,7 +137,4 @@ class DirectorPlanner:
         if not story.strip() or not scenes:
             raise ValueError("Director requires a story and at least one scene")
         total = len(scenes)
-        return [
-            cls.visual_prompt(story, index, total, style, visual_dna)
-            for index, _scene in enumerate(scenes, start=1)
-        ]
+        return [cls.visual_prompt(story, index, total, style, visual_dna) for index, _scene in enumerate(scenes, start=1)]
