@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 from pathlib import Path
@@ -10,9 +11,22 @@ from typing import Optional, Sequence
 from .audio_mixer import AudioClip, AudioMixer
 from utils.errors import VideoProcessingError
 
+LOGGER = logging.getLogger(__name__)
+
 
 class FinalRenderer:
     """Render completed scene videos into one consistent final MP4."""
+
+    @staticmethod
+    def _run_ffmpeg(command: list[str], stage: str) -> subprocess.CompletedProcess[str]:
+        LOGGER.info("Final render stage started: %s", stage)
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "FFmpeg returned no diagnostic output").strip()
+            LOGGER.error("Final render stage failed: %s: %s", stage, detail[:1200])
+            raise VideoProcessingError(f"{stage} failed: {detail[:500]}")
+        LOGGER.info("Final render stage completed: %s", stage)
+        return result
 
     @staticmethod
     def _concat_scenes(scene_paths: Sequence[str], output_path: str, *, width: int = 1920, height: int = 1080) -> None:
@@ -38,13 +52,13 @@ class FinalRenderer:
             )
         filter_parts.append("".join(labels) + f"concat=n={len(scene_paths)}:v=1:a=0[vout]")
 
-        command = ["ffmpeg", "-y"] + inputs + [
+        command = ["ffmpeg", "-y", "-threads", "1"] + inputs + [
             "-filter_complex", ";".join(filter_parts), "-map", "[vout]", "-an",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", output_path,
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", "-pix_fmt", "yuv420p", output_path,
         ]
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
-        if result.returncode != 0:
-            raise VideoProcessingError(f"Scene concatenation failed: {result.stderr[:300]}")
+        FinalRenderer._run_ffmpeg(command, "Scene video normalization/concatenation")
+        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            raise VideoProcessingError("Scene concatenation produced no video output")
 
     @staticmethod
     def _attach_subtitles(video_path: str, subtitles_path: str, output_path: str) -> None:
@@ -52,14 +66,14 @@ class FinalRenderer:
         if not os.path.exists(subtitles_path):
             raise VideoProcessingError(f"Subtitle file does not exist: {subtitles_path}")
         command = [
-            "ffmpeg", "-y", "-i", video_path, "-i", subtitles_path,
+            "ffmpeg", "-y", "-threads", "1", "-i", video_path, "-i", subtitles_path,
             "-map", "0:v:0", "-map", "0:a?", "-map", "1:0",
             "-c:v", "copy", "-c:a", "copy", "-c:s", "mov_text",
-            "-metadata:s:s:0", "language=eng", output_path,
+            "-metadata:s:s:0", "language=eng", "-movflags", "+faststart", output_path,
         ]
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
-        if result.returncode != 0:
-            raise VideoProcessingError(f"Subtitle mux failed: {result.stderr[:300]}")
+        FinalRenderer._run_ffmpeg(command, "Subtitle attachment")
+        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            raise VideoProcessingError("Subtitle attachment produced no final video")
 
     @staticmethod
     def render(
@@ -74,32 +88,32 @@ class FinalRenderer:
         audio_video = str(output.with_name(output.stem + ".audio.mp4"))
         try:
             FinalRenderer._concat_scenes(scene_paths, video_only, width=width, height=height)
-        except TypeError as exc:
-            if "unexpected keyword argument 'width'" not in str(exc) and "unexpected keyword argument 'height'" not in str(exc):
-                raise
-            FinalRenderer._concat_scenes(scene_paths, video_only)
 
-        if voice_over or music or sfx:
-            timeline = AudioMixer.build_timeline(voice_over=voice_over, music=music, sfx=sfx, duration=duration)
-            command = AudioMixer.build_ffmpeg_command(timeline, audio_video, video_path=video_only)
-            result = subprocess.run(command, capture_output=True, text=True, check=False)
-            if result.returncode != 0:
-                if os.path.exists(video_only):
-                    os.remove(video_only)
-                raise VideoProcessingError(f"Final audio render failed: {result.stderr[:300]}")
-            source_for_subtitles = audio_video
-        else:
-            source_for_subtitles = video_only
+            if voice_over or music or sfx:
+                timeline = AudioMixer.build_timeline(voice_over=voice_over, music=music, sfx=sfx, duration=duration)
+                command = AudioMixer.build_ffmpeg_command(timeline, audio_video, video_path=video_only)
+                # Keep one FFmpeg worker and avoid unnecessary encoder threads on the
+                # small Render instance. This is especially important during audio mix.
+                command[1:1] = ["-threads", "1"]
+                FinalRenderer._run_ffmpeg(command, "Audio mix")
+                source_for_subtitles = audio_video
+            else:
+                source_for_subtitles = video_only
 
-        if subtitles_path:
-            try:
+            if subtitles_path:
                 FinalRenderer._attach_subtitles(source_for_subtitles, subtitles_path, str(output))
-            finally:
-                for path in (video_only, audio_video):
-                    if os.path.exists(path):
-                        os.remove(path)
-            return str(output)
+            else:
+                if source_for_subtitles != str(output):
+                    os.replace(source_for_subtitles, output)
 
-        if source_for_subtitles != str(output):
-            os.replace(source_for_subtitles, output)
-        return str(output)
+            if not output.exists() or output.stat().st_size == 0:
+                raise VideoProcessingError("Final render produced no MP4")
+            LOGGER.info("Final MP4 completed: path=%s bytes=%s", output, output.stat().st_size)
+            return str(output)
+        finally:
+            for path in (video_only, audio_video):
+                if os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        LOGGER.warning("Could not remove temporary render file: %s", path)
