@@ -90,11 +90,11 @@ class NarrationPlanner:
 
             if content_type == "Documentary":
                 if index == 1:
-                    text = f"Our journey begins in {location or 'this place'}, where {subject} reveals the character of the story." if location else f"Our journey begins with {subject}, revealing the character of the story."
+                    text = f"Our journey begins in {location or 'this place'}, where {subject} opens a window onto the character of the story."
                 elif index == total:
-                    text = f"We end with {subject}, a final glimpse that brings the journey into focus."
+                    text = f"And as the journey comes to a close, {subject} leaves us with a final glimpse of what makes this place unforgettable."
                 else:
-                    text = f"Along the way, {subject} reveals another side of this story, shaped by the people and places around it."
+                    text = f"Moving deeper into the journey, we discover {subject}, where everyday details reveal another side of this story."
             else:
                 if index == 1:
                     text = f"The story begins with {subject}, setting the journey in motion."
@@ -133,27 +133,47 @@ def concatenate_audio_segments(segments: Sequence[NarrationAudioSegment], output
         raise AudioProcessingError("Cannot concatenate empty narration audio")
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    manifest = output.with_suffix(".concat.txt")
     wav_output = output.with_suffix(".wav")
     try:
-        lines = []
-        for item in segments:
+        # Re-encode every segment to the same PCM format before concatenation.
+        # This avoids codec/container boundaries sounding like hard cuts.
+        normalized: list[str] = []
+        for index, item in enumerate(segments, start=1):
             path = Path(item.path).resolve()
             if not path.exists():
                 raise AudioProcessingError(f"Narration audio does not exist: {path}")
-            safe_path = str(path).replace("'", "'\\''")
-            lines.append(f"file '{safe_path}'")
-        manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        command = ["ffmpeg", "-y", "-threads", "1", "-f", "concat", "-safe", "0", "-i", str(manifest), "-c:a", "pcm_s16le", str(wav_output)]
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
-        if result.returncode != 0:
-            raise AudioProcessingError(f"Narration concatenation failed: {result.stderr[:300]}")
-        if not wav_output.exists() or wav_output.stat().st_size == 0:
-            raise AudioProcessingError("Narration concatenation produced no audio")
-        final_command = ["ffmpeg", "-y", "-threads", "1", "-i", str(wav_output)]
+            normalized_path = output.with_name(f"{output.stem}_narr_{index:03d}.wav")
+            normalize = [
+                "ffmpeg", "-y", "-threads", "1", "-i", str(path),
+                "-af", "aresample=48000,asetpts=PTS-STARTPTS,afade=t=in:d=0.08,afade=t=out:st=max(0\,duration-0.10):d=0.10",
+                "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le", str(normalized_path),
+            ]
+            result = subprocess.run(normalize, capture_output=True, text=True, check=False)
+            if result.returncode != 0 or not normalized_path.exists():
+                raise AudioProcessingError(f"Narration normalization failed: {result.stderr[:300]}")
+            normalized.append(str(normalized_path))
+
+        # Crossfade short overlaps between narration segments so scene changes
+        # sound continuous instead of like three unrelated recordings.
+        current = normalized[0]
+        for index, next_path in enumerate(normalized[1:], start=1):
+            merged = output.with_name(f"{output.stem}_cross_{index:03d}.wav")
+            command = [
+                "ffmpeg", "-y", "-threads", "1", "-i", current, "-i", next_path,
+                "-filter_complex", "[0:a][1:a]acrossfade=d=0.12:c1=tri:c2=tri[a]",
+                "-map", "[a]", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le", str(merged),
+            ]
+            result = subprocess.run(command, capture_output=True, text=True, check=False)
+            if result.returncode != 0 or not merged.exists():
+                raise AudioProcessingError(f"Narration crossfade failed: {result.stderr[:300]}")
+            if current not in normalized[:1]:
+                Path(current).unlink(missing_ok=True)
+            current = str(merged)
+
+        final_command = ["ffmpeg", "-y", "-threads", "1", "-i", current]
         if target_duration is not None:
             final_command += ["-af", f"apad=pad_dur=0.15,atrim=duration={float(target_duration):g},asetpts=N/SR/TB"]
-        final_command += ["-c:a", "libmp3lame", "-b:a", "160k", str(output)]
+        final_command += ["-c:a", "libmp3lame", "-b:a", "192k", str(output)]
         result = subprocess.run(final_command, capture_output=True, text=True, check=False)
         if result.returncode != 0:
             raise AudioProcessingError(f"Narration finalization failed: {result.stderr[:300]}")
@@ -161,7 +181,9 @@ def concatenate_audio_segments(segments: Sequence[NarrationAudioSegment], output
             raise AudioProcessingError("Narration finalization produced no audio")
         return str(output)
     finally:
-        if manifest.exists():
-            manifest.unlink()
+        for candidate in output.parent.glob(f"{output.stem}_narr_*.wav"):
+            candidate.unlink(missing_ok=True)
+        for candidate in output.parent.glob(f"{output.stem}_cross_*.wav"):
+            candidate.unlink(missing_ok=True)
         if wav_output.exists():
             wav_output.unlink()
