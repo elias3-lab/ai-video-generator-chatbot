@@ -140,7 +140,6 @@ def _run_project(project_id: str, prompt: str, duration_label: str, content_type
     def scene_context(scene):
         order = scene_order[scene.scene_id]
         subject = DirectorPlanner.scene_subject(prompt, order, total_scenes)
-        director_prompt = DirectorPlanner.visual_prompt(prompt, order, total_scenes, style, orchestrator.visual_dna.prompt_prefix())
         return SceneContext(prompt=subject, consistency_required=True, visual_priority=0.8)
 
     state = orchestrator.run(project_id, scene_context=scene_context)
@@ -256,4 +255,34 @@ CSS = """
 .gradio-container { max-width: 1100px !important; background: var(--castelou-bg) !important; }
 .castelou-title { text-align: center; margin: 28px 0 34px; }
 .castelou-title h1 { letter-spacing: .12em; font-weight: 700; margin-bottom: 8px; }
-.castelou-title p { opacity: .65; letter-spacing: .08em; }"""
+.castelou-title p { opacity: .65; letter-spacing: .08em; }
+.castelou-card { border: 1px solid rgba(185,151,91,.22); border-radius: 18px; padding: 22px; background: rgba(255,255,255,.025); }
+#prompt textarea { min-height: 180px; }
+"""
+
+with gr.Blocks(title="CASTELOU AI Documentary Studio", css=CSS) as demo:
+    gr.Markdown("# CASTELOU AI DOCUMENTARY STUDIO\n### Cinematic AI video generation", elem_classes="castelou-title")
+    with gr.Group(elem_classes="castelou-card"):
+        prompt = gr.Textbox(label="Story / Prompt", elem_id="prompt", placeholder="Describe the documentary story you want to create...")
+        with gr.Row():
+            duration = gr.Dropdown(list(DURATION_OPTIONS), value=DEFAULT_DURATION, label="Duration")
+            content_type = gr.Dropdown(list(CONTENT_TYPES), value=DEFAULT_CONTENT_TYPE, label="Content")
+            video_format = gr.Dropdown(list(VIDEO_FORMATS), value=DEFAULT_VIDEO_FORMAT, label="Format")
+        create_btn = gr.Button("🎬 CREATE VIDEO", variant="primary")
+        video_output = gr.Video(label="Final Video")
+        status_output = gr.Markdown("Ready.")
+        job_id = gr.Textbox(label="Job ID", interactive=True)
+        with gr.Row():
+            check_btn = gr.Button("🔄 Check / Refresh")
+            resume_btn = gr.Button("▶️ Resume Job")
+        recent_output = gr.Markdown()
+        timer = gr.Timer(5)
+
+    create_btn.click(create_video, inputs=[prompt, duration, content_type, video_format], outputs=[video_output, status_output, recent_output, job_id])
+    check_btn.click(check_video_job, inputs=job_id, outputs=[video_output, status_output, recent_output])
+    resume_btn.click(resume_video, inputs=job_id, outputs=status_output)
+    timer.tick(check_video_job, inputs=job_id, outputs=[video_output, status_output, recent_output])
+
+
+if __name__ == "__main__":
+    demo.launch(server_name=SERVER_NAME, server_port=SERVER_PORT)
