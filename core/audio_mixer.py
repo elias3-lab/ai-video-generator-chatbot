@@ -30,9 +30,9 @@ class AudioMixer:
     """Build deterministic FFmpeg audio-mixing commands."""
 
     VOICE_VOLUME = 1.0
-    MUSIC_VOLUME = 0.18
-    SFX_VOLUME = 0.55
-    DUCKED_MUSIC_VOLUME = 0.06
+    MUSIC_VOLUME = 0.28
+    SFX_VOLUME = 0.35
+    DUCKED_MUSIC_VOLUME = 0.12
 
     @staticmethod
     def build_timeline(*, voice_over: Optional[str] = None, music: Optional[str] = None, sfx: Sequence[AudioClip] = (), duration: Optional[float] = None) -> AudioTimeline:
@@ -80,9 +80,6 @@ class AudioMixer:
             if clip.kind == "music" and has_voice:
                 volume = AudioMixer.DUCKED_MUSIC_VOLUME
             chain.append(f"volume={volume:g}")
-            # Keep every generated audio layer inside the requested project
-            # duration. This prevents a long TTS/music asset from extending
-            # the final MP4 beyond the video timeline.
             if timeline.duration is not None:
                 chain.append(f"atrim=duration={timeline.duration:g}")
                 chain.append("asetpts=PTS-STARTPTS")
@@ -96,7 +93,7 @@ class AudioMixer:
             filters.append(f"[{input_index}:a]" + ",".join(chain) + f"[{label}]")
             labels.append(f"[{label}]")
 
-        mix = "".join(labels) + f"amix=inputs={len(labels)}:duration=longest:dropout_transition=2,loudnorm=I=-16:TP=-1.5:LRA=11[outa]"
+        mix = "".join(labels) + f"amix=inputs={len(labels)}:duration=longest:dropout_transition=3,loudnorm=I=-16:TP=-1.5:LRA=11[outa]"
         filters.append(mix)
         return ";".join(filters), "[outa]"
 
