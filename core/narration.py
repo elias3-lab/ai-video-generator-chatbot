@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,18 +28,35 @@ class NarrationAudioSegment:
 
 
 class NarrationPlanner:
-    """Create deterministic first-pass narration and audio timing."""
+    """Create coherent documentary narration from story content, not metadata."""
 
     @staticmethod
-    def build_segments(prompt: str, scenes: Sequence[object], content_type: str = "Documentary") -> list[NarrationSegment]:
-        prompt = (prompt or "").strip()
-        if not prompt:
-            raise ValueError("Narration requires a non-empty prompt")
+    def _clean_story(prompt: str) -> str:
+        text = re.sub(r"\s+", " ", (prompt or "").strip())
+        text = re.sub(r"(?i),?\s*(realistic documentary style|natural lighting|consistent visual DNA|smooth cinematic camera movement|english narration|cinematic documentary|realistic style)\.?", "", text)
+        text = re.sub(r"(?i)\s*(?:English narration|voice[- ]?over)\.?$", "", text)
+        return text.strip(" .")
+
+    @staticmethod
+    def _subjects(story: str) -> list[str]:
+        text = NarrationPlanner._clean_story(story)
+        match = re.search(r"(?i)\b(?:show|showing|include|including|featuring|cover)\s+(.+?)(?:\.|$)", text)
+        if not match:
+            return [text] if text else []
+        parts = [p.strip(" .") for p in re.split(r",|\band\b", match.group(1), flags=re.IGNORECASE)]
+        return [p for p in parts if p]
+
+    @classmethod
+    def build_segments(cls, prompt: str, scenes: Sequence[object], content_type: str = "Documentary") -> list[NarrationSegment]:
+        story = cls._clean_story(prompt)
+        if not story:
+            raise ValueError("Narration requires a non-empty story")
         if not scenes:
             raise ValueError("Narration requires at least one scene")
         if content_type not in {"Documentary", "Film"}:
             raise ValueError("Unsupported content type")
 
+        subjects = cls._subjects(story) or [story]
         segments: list[NarrationSegment] = []
         total = len(scenes)
         for index, scene in enumerate(scenes, start=1):
@@ -51,20 +69,22 @@ class NarrationPlanner:
             duration = float(raw_duration)
             if duration <= 0:
                 raise ValueError("Scene duration must be positive")
+
+            subject = subjects[min(len(subjects) - 1, ((index - 1) * len(subjects)) // max(1, total))]
             if content_type == "Documentary":
                 if index == 1:
-                    text = f"We begin our journey into {prompt}."
+                    text = f"Our journey begins with {subject}."
                 elif index == total:
-                    text = f"And this is where the story of {prompt} leaves us—with a deeper view of what makes it remarkable."
+                    text = f"We end with {subject}, a final glimpse of the story that brings this journey into focus."
                 else:
-                    text = f"As the journey continues, we discover another side of {prompt}."
+                    text = f"Along the way, we discover {subject}, revealing another part of this story."
             else:
                 if index == 1:
-                    text = f"The story begins with {prompt}."
+                    text = f"The story begins with {subject}."
                 elif index == total:
-                    text = f"The journey reaches its final moment, revealing what {prompt} has become."
+                    text = f"The journey closes with {subject}, bringing the story to its final moment."
                 else:
-                    text = f"The story moves forward, uncovering another chapter of {prompt}."
+                    text = f"The story moves forward through {subject}."
             segments.append(NarrationSegment(scene_id, index, duration, text))
         return segments
 
