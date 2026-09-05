@@ -139,8 +139,8 @@ def _run_project(project_id: str, prompt: str, duration_label: str, content_type
 
     def scene_context(scene):
         order = scene_order[scene.scene_id]
-        subject = DirectorPlanner.scene_subject(prompt, order, total_scenes)
-        return SceneContext(prompt=subject, consistency_required=True, visual_priority=0.8)
+        director_prompt = DirectorPlanner.visual_prompt(prompt, order, total_scenes, style, orchestrator.visual_dna.prompt_prefix())
+        return SceneContext(prompt=director_prompt, consistency_required=True, visual_priority=0.8)
 
     state = orchestrator.run(project_id, scene_context=scene_context)
     completed = [scene for scene in state.scenes if scene.status.value == "completed" and scene.output_path]
