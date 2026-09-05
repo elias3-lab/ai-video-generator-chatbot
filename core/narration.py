@@ -134,10 +134,8 @@ def concatenate_audio_segments(segments: Sequence[NarrationAudioSegment], output
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     wav_output = output.with_suffix(".wav")
+    concat_list = output.with_name(f"{output.stem}_concat.txt")
     try:
-        # Normalize every TTS file to a conservative PCM WAV format. Keep this
-        # command deliberately simple: some TTS WAV headers are unusual, and
-        # complex filters can make FFmpeg reject an otherwise valid file.
         normalized: list[str] = []
         for index, item in enumerate(segments, start=1):
             path = Path(item.path).resolve()
@@ -145,8 +143,6 @@ def concatenate_audio_segments(segments: Sequence[NarrationAudioSegment], output
                 raise AudioProcessingError(f"Narration audio does not exist: {path}")
             if path.stat().st_size == 0:
                 raise AudioProcessingError(f"Narration audio is empty: {path}")
-            # Validate the source before attempting conversion so the real
-            # filename and FFmpeg diagnostic are preserved in the error.
             try:
                 source_duration = probe_audio_duration(str(path))
             except Exception as exc:
@@ -169,28 +165,23 @@ def concatenate_audio_segments(segments: Sequence[NarrationAudioSegment], output
                 raise AudioProcessingError(f"Narration normalization failed for {path}: {detail[:1000]}")
             normalized.append(str(normalized_path))
 
-        # Crossfade short overlaps between narration segments so scene changes
-        # sound continuous instead of like unrelated recordings.
-        current = normalized[0]
-        for index, next_path in enumerate(normalized[1:], start=1):
-            merged = output.with_name(f"{output.stem}_cross_{index:03d}.wav")
-            command = [
-                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-threads", "1",
-                "-i", current, "-i", next_path,
-                "-filter_complex", "[0:a][1:a]acrossfade=d=0.12:c1=tri:c2=tri[a]",
-                "-map", "[a]", "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", str(merged),
-            ]
-            try:
-                result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=120)
-            except subprocess.TimeoutExpired as exc:
-                raise AudioProcessingError(f"Narration crossfade timed out at segment {index + 1}") from exc
-            if result.returncode != 0 or not merged.exists() or merged.stat().st_size == 0:
-                detail = (result.stderr or result.stdout or "FFmpeg returned no diagnostic output").strip()
-                raise AudioProcessingError(f"Narration crossfade failed at segment {index + 1}: {detail[:1000]}")
-            Path(current).unlink(missing_ok=True)
-            current = str(merged)
+        # Concatenate complete normalized clips without overlap. Crossfading
+        # TTS clips can swallow the final consonants/syllables of one scene.
+        concat_list.write_text("".join(f"file '{Path(path).as_posix().replace(chr(39), chr(39)+chr(39))}'\n" for path in normalized), encoding="utf-8")
+        command = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-threads", "1",
+            "-f", "concat", "-safe", "0", "-i", str(concat_list),
+            "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", str(wav_output),
+        ]
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=120)
+        except subprocess.TimeoutExpired as exc:
+            raise AudioProcessingError("Narration concatenation timed out") from exc
+        if result.returncode != 0 or not wav_output.exists() or wav_output.stat().st_size == 0:
+            detail = (result.stderr or result.stdout or "FFmpeg returned no diagnostic output").strip()
+            raise AudioProcessingError(f"Narration concatenation failed: {detail[:1000]}")
 
-        final_command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-threads", "1", "-i", current]
+        final_command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-threads", "1", "-i", str(wav_output)]
         if target_duration is not None:
             final_command += ["-af", f"apad=pad_dur=0.15,atrim=duration={float(target_duration):g},asetpts=N/SR/TB"]
         final_command += ["-vn", "-ac", "2", "-ar", "48000", "-c:a", "libmp3lame", "-b:a", "192k", str(output)]
@@ -209,5 +200,5 @@ def concatenate_audio_segments(segments: Sequence[NarrationAudioSegment], output
             candidate.unlink(missing_ok=True)
         for candidate in output.parent.glob(f"{output.stem}_cross_*.wav"):
             candidate.unlink(missing_ok=True)
-        if wav_output.exists():
-            wav_output.unlink()
+        wav_output.unlink(missing_ok=True)
+        concat_list.unlink(missing_ok=True)
