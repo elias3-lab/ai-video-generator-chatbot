@@ -19,6 +19,10 @@ class DropboxStorage:
     def enabled(self) -> bool:
         return bool(self.token)
 
+    def _disable(self, reason: str) -> None:
+        print(f"[DropboxStorage] persistence disabled: {reason}", flush=True)
+        self.token = ""
+
     def _path(self, remote_path: str) -> str:
         return f"{self.base_path}/{remote_path.strip('/')}"
 
@@ -37,29 +41,46 @@ class DropboxStorage:
         current = ""
         for part in parts:
             current = f"{current}/{part}"
-            response = requests.post(
-                "https://api.dropboxapi.com/2/files/create_folder_v2",
-                headers={**self._headers(), "Content-Type": "application/json"},
-                json={"path": self._path(current), "autorename": False},
-                timeout=30,
-            )
-            if response.status_code not in (200, 409):
-                response.raise_for_status()
+            try:
+                response = requests.post(
+                    "https://api.dropboxapi.com/2/files/create_folder_v2",
+                    headers={**self._headers(), "Content-Type": "application/json"},
+                    json={"path": self._path(current), "autorename": False},
+                    timeout=30,
+                )
+            except requests.RequestException as exc:
+                self._disable(f"request error: {exc}")
+                return
+            if response.status_code in (200, 409):
+                continue
+            if response.status_code in (401, 403):
+                self._disable(f"HTTP {response.status_code} from create_folder_v2")
+                return
+            response.raise_for_status()
 
     def upload_bytes(self, data: bytes, remote_path: str) -> str:
         if not self.enabled or self._is_final_path(remote_path):
             return ""
         self.ensure_folder(str(Path(remote_path).parent).replace("\\", "/"))
-        response = requests.post(
-            "https://content.dropboxapi.com/2/files/upload",
-            headers={
-                **self._headers(),
-                "Content-Type": "application/octet-stream",
-                "Dropbox-API-Arg": json.dumps({"path": self._path(remote_path), "mode": "overwrite", "autorename": False, "mute": True}),
-            },
-            data=data,
-            timeout=300,
-        )
+        if not self.enabled:
+            return ""
+        try:
+            response = requests.post(
+                "https://content.dropboxapi.com/2/files/upload",
+                headers={
+                    **self._headers(),
+                    "Content-Type": "application/octet-stream",
+                    "Dropbox-API-Arg": json.dumps({"path": self._path(remote_path), "mode": "overwrite", "autorename": False, "mute": True}),
+                },
+                data=data,
+                timeout=300,
+            )
+        except requests.RequestException as exc:
+            self._disable(f"upload request error: {exc}")
+            return ""
+        if response.status_code in (401, 403):
+            self._disable(f"HTTP {response.status_code} from upload")
+            return ""
         response.raise_for_status()
         return self._path(remote_path)
 
@@ -72,12 +93,19 @@ class DropboxStorage:
     def download_bytes(self, remote_path: str) -> Optional[bytes]:
         if not self.enabled or self._is_final_path(remote_path):
             return None
-        response = requests.post(
-            "https://content.dropboxapi.com/2/files/download",
-            headers={**self._headers(), "Dropbox-API-Arg": json.dumps({"path": self._path(remote_path)})},
-            timeout=300,
-        )
+        try:
+            response = requests.post(
+                "https://content.dropboxapi.com/2/files/download",
+                headers={**self._headers(), "Dropbox-API-Arg": json.dumps({"path": self._path(remote_path)})},
+                timeout=300,
+            )
+        except requests.RequestException as exc:
+            self._disable(f"download request error: {exc}")
+            return None
         if response.status_code == 409:
+            return None
+        if response.status_code in (401, 403):
+            self._disable(f"HTTP {response.status_code} from download")
             return None
         response.raise_for_status()
         return response.content
@@ -94,24 +122,38 @@ class DropboxStorage:
     def list_files(self, remote_folder: str) -> list[str]:
         if not self.enabled or self._is_final_path(remote_folder):
             return []
-        response = requests.post(
-            "https://api.dropboxapi.com/2/files/list_folder",
-            headers={**self._headers(), "Content-Type": "application/json"},
-            json={"path": self._path(remote_folder), "recursive": False},
-            timeout=30,
-        )
+        try:
+            response = requests.post(
+                "https://api.dropboxapi.com/2/files/list_folder",
+                headers={**self._headers(), "Content-Type": "application/json"},
+                json={"path": self._path(remote_folder), "recursive": False},
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            self._disable(f"list request error: {exc}")
+            return []
         if response.status_code == 409:
+            return []
+        if response.status_code in (401, 403):
+            self._disable(f"HTTP {response.status_code} from list_folder")
             return []
         response.raise_for_status()
         data = response.json()
         paths = [e.get("path_display", "") for e in data.get("entries", []) if e.get(".tag") == "file"]
-        while data.get("has_more"):
-            response = requests.post(
-                "https://api.dropboxapi.com/2/files/list_folder/continue",
-                headers={**self._headers(), "Content-Type": "application/json"},
-                json={"cursor": data["cursor"]},
-                timeout=30,
-            )
+        while data.get("has_more") and self.enabled:
+            try:
+                response = requests.post(
+                    "https://api.dropboxapi.com/2/files/list_folder/continue",
+                    headers={**self._headers(), "Content-Type": "application/json"},
+                    json={"cursor": data["cursor"]},
+                    timeout=30,
+                )
+            except requests.RequestException as exc:
+                self._disable(f"list continuation error: {exc}")
+                return paths
+            if response.status_code in (401, 403):
+                self._disable(f"HTTP {response.status_code} from list_folder/continue")
+                return paths
             response.raise_for_status()
             data = response.json()
             paths.extend(e.get("path_display", "") for e in data.get("entries", []) if e.get(".tag") == "file")
