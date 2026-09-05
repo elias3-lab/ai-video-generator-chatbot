@@ -174,11 +174,7 @@ def _run_project(project_id: str, prompt: str, duration_label: str, content_type
     return final_path, diagnostics
 
 
-def _create_video_sync(prompt: str, duration_label: str, content_type: str, video_format: str, progress=None):
-    project_id = f"castelou-{uuid.uuid4().hex[:10]}"
-    registry = ProviderRegistry()
-    orchestrator = PipelineOrchestrator(provider_engine=registry.engine)
-    orchestrator.create_project(project_id, _duration_seconds(duration_label))
+def _create_video_sync(project_id: str, prompt: str, duration_label: str, content_type: str, video_format: str, progress=None):
     return _run_project(project_id, prompt, duration_label, content_type, video_format, progress)
 
 
@@ -187,6 +183,14 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
     if not prompt:
         raise gr.Error("Tell CASTELOU what story to create first.")
     project_id = f"castelou-{uuid.uuid4().hex[:10]}"
+    # Create the durable/local checkpoint before the background thread starts.
+    # The previous implementation created the Job first, allowing _run_project()
+    # to load state.json before the project existed on a fresh Render instance.
+    orchestrator = PipelineOrchestrator()
+    try:
+        orchestrator.create_project(project_id, _duration_seconds(duration_label))
+    except Exception as exc:
+        raise gr.Error(f"Could not create project checkpoint: {_sanitize_error(exc)}")
     job_id = start_video_job(lambda progress: _run_project(project_id, prompt, duration_label, content_type, video_format, progress), project_id=project_id)
     return None, f"Job queued: {job_id}\nProject: {project_id}\n\n{persistence_status()}\n\nProcessing on the Render server. You can close the phone while generation continues.\n\nLive progress will refresh automatically every 5 seconds.", None, job_id
 
@@ -255,39 +259,32 @@ CSS = """
 .castelou-title h1 { letter-spacing: .12em; font-weight: 700; margin-bottom: 8px; }
 .castelou-title p { opacity: .65; letter-spacing: .08em; }
 .castelou-card { border: 1px solid rgba(185,151,91,.22); border-radius: 18px; padding: 22px; background: rgba(255,255,255,.025); }
-#prompt textarea { min-height: 150px; }
-#create button, #resume button { border-radius: 14px; font-weight: 700; letter-spacing: .04em; }
+#prompt textarea { min-height: 180px; }
 """
 
+with gr.Blocks(title="CASTELOU AI Documentary Studio", css=CSS) as demo:
+    gr.Markdown("# CASTELOU AI DOCUMENTARY STUDIO\n### Cinematic AI video generation", elem_classes="castelou-title")
+    with gr.Group(elem_classes="castelou-card"):
+        prompt = gr.Textbox(label="Story / Prompt", elem_id="prompt", placeholder="Describe the documentary story you want to create...")
+        with gr.Row():
+            duration = gr.Dropdown(list(DURATION_OPTIONS), value=DEFAULT_DURATION, label="Duration")
+            content_type = gr.Dropdown(list(CONTENT_TYPES), value=DEFAULT_CONTENT_TYPE, label="Content")
+            video_format = gr.Dropdown(list(VIDEO_FORMATS), value=DEFAULT_VIDEO_FORMAT, label="Format")
+        create_btn = gr.Button("🎬 CREATE VIDEO", variant="primary")
+        video_output = gr.Video(label="Final Video")
+        status_output = gr.Markdown("Ready.")
+        job_id = gr.Textbox(label="Job ID", interactive=True)
+        with gr.Row():
+            check_btn = gr.Button("🔄 Check / Refresh")
+            resume_btn = gr.Button("▶️ Resume Job")
+        recent_output = gr.Markdown()
+        timer = gr.Timer(5)
 
-def build_ui() -> gr.Blocks:
-    with gr.Blocks(title="CASTELOU AI DOCUMENTARY STUDIO", css=CSS) as demo:
-        gr.HTML("""<div class="castelou-title"><h1>CASTELOU</h1><p>AI DOCUMENTARY STUDIO</p></div>""")
-        with gr.Group(elem_classes=["castelou-card"]):
-            gr.Markdown("### Type")
-            content_type = gr.Radio(list(CONTENT_TYPES), value=DEFAULT_CONTENT_TYPE, label=None, interactive=True)
-            gr.Markdown("### Duration")
-            duration = gr.Radio(list(DURATION_OPTIONS.keys()), value=DEFAULT_DURATION, label=None, interactive=True)
-            gr.Markdown("### Format")
-            video_format = gr.Radio(list(VIDEO_FORMATS), value=DEFAULT_VIDEO_FORMAT, label=None, interactive=True)
-            prompt = gr.Textbox(label="Prompt", placeholder="Tell me a story about...", lines=5, elem_id="prompt")
-            create = gr.Button("CREATE VIDEO", variant="primary", elem_id="create")
-        gr.Markdown(f"### Job Persistence\n{persistence_status()}")
-        video = gr.Video(label="Final MP4", autoplay=False)
-        download = gr.DownloadButton("DOWNLOAD VIDEO", value=None)
-        diagnostics = gr.Textbox(label="Live Pipeline Status", lines=20, interactive=False)
-        job_id = gr.Textbox(label="Job ID", interactive=True, placeholder="Job ID is filled automatically after CREATE VIDEO")
-        check = gr.Button("CHECK JOB")
-        resume = gr.Button("RESUME VIDEO", variant="secondary", elem_id="resume")
-        resumable = gr.Textbox(label="Resumable Jobs", lines=5, interactive=False)
-        create.click(fn=create_video, inputs=[prompt, duration, content_type, video_format], outputs=[video, diagnostics, download, job_id])
-        check.click(fn=check_video_job, inputs=[job_id], outputs=[video, diagnostics, download])
-        resume.click(fn=resume_video, inputs=[job_id], outputs=[diagnostics])
-        timer = gr.Timer(value=5)
-        timer.tick(fn=check_video_job, inputs=[job_id], outputs=[video, diagnostics, download])
-        demo.load(fn=recent_resumable_jobs, inputs=None, outputs=[resumable])
-    return demo
+    create_btn.click(create_video, inputs=[prompt, duration, content_type, video_format], outputs=[video_output, status_output, recent_output, job_id])
+    check_btn.click(check_video_job, inputs=job_id, outputs=[video_output, status_output, recent_output])
+    resume_btn.click(resume_video, inputs=job_id, outputs=status_output)
+    timer.tick(check_video_job, inputs=job_id, outputs=[video_output, status_output, recent_output])
 
 
 if __name__ == "__main__":
-    build_ui().launch(server_name=SERVER_NAME, server_port=SERVER_PORT)
+    demo.launch(server_name=SERVER_NAME, server_port=SERVER_PORT)
