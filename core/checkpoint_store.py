@@ -26,6 +26,7 @@ class CheckpointStore:
 
     def save(self, state: ProjectState) -> Path:
         path = self.path_for(state.project_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
         state.save(path)
         if storage.enabled:
             storage.upload_file(path, self._remote(state.project_id))
@@ -34,6 +35,7 @@ class CheckpointStore:
     def load(self, project_id: str) -> ProjectState:
         path = self.path_for(project_id)
         if not path.exists() and storage.enabled:
+            path.parent.mkdir(parents=True, exist_ok=True)
             storage.download_file(self._remote(project_id), path)
         return ProjectState.load(path)
 
@@ -42,6 +44,7 @@ class CheckpointStore:
         if path.exists():
             return True
         if storage.enabled:
+            path.parent.mkdir(parents=True, exist_ok=True)
             return storage.download_file(self._remote(project_id), path)
         return False
 
