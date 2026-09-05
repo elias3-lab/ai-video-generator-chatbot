@@ -22,13 +22,19 @@ def _duration_label(project_id: str) -> str:
 
 def _prompt(project_id: str) -> str:
     state = PipelineOrchestrator().checkpoints.load(project_id)
-    # Scene prompts contain the persisted story context after a Render restart.
     return next((scene.prompt for scene in state.scenes if scene.prompt), "Continue the saved documentary project.")
 
 
 def recover_interrupted_jobs() -> None:
     """Resume queued/running jobs that were interrupted by a process restart."""
-    jobs = list_video_jobs(50)
+    try:
+        jobs = list_video_jobs(50)
+    except Exception as exc:
+        # Recovery is optional. Never let durable-storage problems prevent the
+        # actual Gradio web application from starting.
+        LOGGER.warning("Startup recovery skipped: %s", exc)
+        return
+
     for job in jobs:
         if job.status not in {"queued", "running"} or not job.project_id:
             continue
@@ -36,7 +42,6 @@ def recover_interrupted_jobs() -> None:
             project_id = job.project_id
             duration_label = _duration_label(project_id)
             prompt = _prompt(project_id)
-            # Reuse the same job ID so the existing phone UI keeps polling it.
             LOGGER.info("Recovering interrupted job %s (project %s)", job.job_id, project_id)
             start_video_job(
                 lambda progress, pid=project_id, p=prompt, d=duration_label: app._run_project(
@@ -54,8 +59,6 @@ def recover_interrupted_jobs() -> None:
 
 
 if __name__ == "__main__":
-    # Give Gradio/app import time to finish before recovery starts. This also
-    # keeps startup deterministic on Render while Dropbox is being contacted.
     time.sleep(2)
     recover_interrupted_jobs()
     app.demo.launch(server_name=app.SERVER_NAME, server_port=app.SERVER_PORT)
