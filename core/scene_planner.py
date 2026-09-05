@@ -24,9 +24,7 @@ class ScenePlan:
 def validate_target_duration(duration_seconds: int) -> int:
     """Validate one of the supported Create Video durations."""
     if duration_seconds not in SUPPORTED_DURATIONS:
-        raise ValueError(
-            "Unsupported duration. Choose 30s, 3 min, 4 min, or 5 min."
-        )
+        raise ValueError("Unsupported duration. Choose 30s, 3 min, 4 min, or 5 min.")
     return duration_seconds
 
 
@@ -36,31 +34,25 @@ def plan_scenes(
     max_segment_duration: int = 120,
     preferred_scene_duration: int = 10,
 ) -> List[ScenePlan]:
-    """Split a project into renderable scenes without exceeding segment limits.
+    """Split a project into renderable cinematic shots.
 
-    The planner favors ~10-second scenes for cinematic editing while allowing
-    the final scene to be shorter. No individual scene can exceed the global
-    generation limit passed by the caller.
+    Short 30-second projects use five-second shots so the final edit feels like
+    a documentary sequence rather than three long stock clips. Longer projects
+    keep the lighter ~10-second segmentation to control generation cost/time.
     """
     validate_target_duration(duration_seconds)
     if max_segment_duration <= 0 or preferred_scene_duration <= 0:
         raise ValueError("Scene duration limits must be positive")
     if preferred_scene_duration > max_segment_duration:
         preferred_scene_duration = max_segment_duration
+    shot_duration = 5 if duration_seconds <= 30 else preferred_scene_duration
 
     scenes: List[ScenePlan] = []
     remaining = duration_seconds
     order = 1
     while remaining > 0:
-        duration = min(preferred_scene_duration, max_segment_duration, remaining)
-        scenes.append(
-            ScenePlan(
-                scene_id=f"scene_{order:03d}",
-                duration_seconds=duration,
-                order=order,
-                purpose="story beat",
-            )
-        )
+        duration = min(shot_duration, max_segment_duration, remaining)
+        scenes.append(ScenePlan(scene_id=f"scene_{order:03d}", duration_seconds=duration, order=order, purpose="story beat"))
         remaining -= duration
         order += 1
     return scenes
