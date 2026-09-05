@@ -7,7 +7,6 @@ from typing import List, Optional, Sequence, Tuple
 @dataclass(frozen=True)
 class AudioClip:
     """An audio asset placed on the project timeline."""
-
     path: str
     start: float = 0.0
     volume: float = 1.0
@@ -19,7 +18,6 @@ class AudioClip:
 @dataclass(frozen=True)
 class AudioTimeline:
     """Resolved audio layers for a video project."""
-
     voice_over: Optional[AudioClip]
     music: Optional[AudioClip]
     sfx: Tuple[AudioClip, ...] = ()
@@ -28,7 +26,6 @@ class AudioTimeline:
 
 class AudioMixer:
     """Build deterministic FFmpeg audio-mixing commands."""
-
     VOICE_VOLUME = 1.0
     MUSIC_VOLUME = 0.28
     SFX_VOLUME = 0.35
@@ -36,25 +33,17 @@ class AudioMixer:
 
     @staticmethod
     def build_timeline(*, voice_over: Optional[str] = None, music: Optional[str] = None, sfx: Sequence[AudioClip] = (), duration: Optional[float] = None) -> AudioTimeline:
-        """Create a normalized project timeline from available audio assets."""
         voice = AudioClip(voice_over, volume=AudioMixer.VOICE_VOLUME, kind="voice") if voice_over else None
         music_clip = AudioClip(music, volume=AudioMixer.MUSIC_VOLUME, kind="music") if music else None
         normalized_sfx = tuple(
-            AudioClip(
-                clip.path,
-                start=max(0.0, clip.start),
-                volume=clip.volume if clip.volume > 0 else AudioMixer.SFX_VOLUME,
-                fade_in=max(0.0, clip.fade_in),
-                fade_out=max(0.0, clip.fade_out),
-                kind="sfx",
-            )
+            AudioClip(clip.path, start=max(0.0, clip.start), volume=clip.volume if clip.volume > 0 else AudioMixer.SFX_VOLUME,
+                      fade_in=max(0.0, clip.fade_in), fade_out=max(0.0, clip.fade_out), kind="sfx")
             for clip in sfx
         )
         return AudioTimeline(voice, music_clip, normalized_sfx, duration)
 
     @staticmethod
     def build_filter_complex(timeline: AudioTimeline, *, input_offset: int = 0) -> Tuple[str, str]:
-        """Return FFmpeg filter_complex and final audio label."""
         clips: List[AudioClip] = []
         if timeline.voice_over:
             clips.append(timeline.voice_over)
@@ -75,11 +64,9 @@ class AudioMixer:
         for index, clip in enumerate(clips):
             input_index = index + input_offset
             label = f"a{index}"
-            chain = ["aresample=48000"]
-            volume = clip.volume
+            chain = ["aresample=48000", f"volume={clip.volume:g}"]
             if clip.kind == "music" and has_voice:
-                volume = AudioMixer.DUCKED_MUSIC_VOLUME
-            chain.append(f"volume={volume:g}")
+                chain[-1] = f"volume={AudioMixer.DUCKED_MUSIC_VOLUME:g}"
             if timeline.duration is not None:
                 chain.append(f"atrim=duration={timeline.duration:g}")
                 chain.append("asetpts=PTS-STARTPTS")
@@ -99,7 +86,6 @@ class AudioMixer:
 
     @staticmethod
     def build_ffmpeg_command(timeline: AudioTimeline, output_path: str, *, video_path: Optional[str] = None) -> List[str]:
-        """Build an FFmpeg command for audio-only or video+audio output."""
         clips: List[AudioClip] = []
         if timeline.voice_over:
             clips.append(timeline.voice_over)
@@ -114,7 +100,6 @@ class AudioMixer:
             command += ["-i", video_path]
         for clip in clips:
             command += ["-i", clip.path]
-
         filter_complex, final_label = AudioMixer.build_filter_complex(timeline, input_offset=1 if video_path else 0)
         command += ["-filter_complex", filter_complex, "-map", final_label]
         if video_path:
