@@ -26,6 +26,12 @@ class DirectorPlanner:
         "intimate detail shot, 50mm lens, shallow depth of field",
         "wide closing composition, 35mm lens, slow pull-back",
     )
+    ACTIONS = (
+        "begin with a living environment and visible activity; the camera observes the place rather than circling one person",
+        "follow a clear human or environmental action from beginning to end, with foreground, middle ground, and background movement",
+        "focus on a meaningful physical detail or craft process, showing hands, tools, textures, and the surrounding place in motion",
+        "resolve the journey with a changing landscape or people naturally moving through the environment; end on a memorable visual beat",
+    )
 
     @classmethod
     def beat_for(cls, order: int, total: int) -> DirectorBeat:
@@ -64,7 +70,6 @@ class DirectorPlanner:
         match = re.search(r"(?i)\babout\s+the\s+(.+?)(?:\.|$)", text)
         if match:
             subject = match.group(1).strip()
-            # Keep geographic phrases intact; they are valuable search anchors.
             location_words = re.findall(
                 r"(?i)\b(?:Tunisia|Tunis|Sidi Bou Said|Djerba|Kairouan|Carthage|Mediterranean|Morocco|Egypt|Algeria|Turkey|India|Japan|Italy|France|Spain|Portugal|Greece)\b",
                 subject,
@@ -121,14 +126,19 @@ class DirectorPlanner:
         anchor = cls._location_anchor(story)
         location = f" Location anchor: {anchor}." if anchor else ""
         dna = f" Visual DNA: {visual_dna.strip()}." if visual_dna.strip() else ""
+        action = cls.ACTIONS[3 if beat.name == "Ending" else 2 if beat.name == "Discovery" else 1 if beat.name == "Journey" else 0]
         return (
             f"{beat.name} beat. {beat.objective}. Scene subject: {subject}."
             f"{location} {style.strip()}. {beat.camera}. Pacing: {beat.pacing}. "
+            f"Action direction: {action}. "
+            "Create a genuine moving documentary shot, not a still image or slideshow. "
+            "The shot must contain purposeful camera movement AND meaningful subject/environment movement. "
+            "Vary composition from previous scenes; do not repeat the same people, group arrangement, or camera orbit. "
+            "Never make the whole shot consist of three people standing together while the camera circles them. "
             "Show only visuals directly related to the scene subject and location anchor. "
-            "Cinematic documentary realism, natural light, physically plausible motion, "
-            "consistent geography and visual language, authentic local architecture and culture, "
-            "no unrelated locations, no unrelated countries, no unrelated people, "
-            "no musicians unless the scene subject explicitly asks for them, no text, no logos, no watermarks."
+            "Cinematic documentary realism, natural light, physically plausible motion, authentic local architecture and culture, "
+            "no unrelated locations, no unrelated countries, no unrelated people, no generic stock-looking scene, "
+            "no musicians unless explicitly requested, no text, no logos, no watermarks."
             f"{dna}"
         )
 
