@@ -162,7 +162,9 @@ def start_video_job(
             if hasattr(current, key):
                 setattr(current, key, value)
         current.diagnostics = _progress_diagnostics(current, str(changes.get("diagnostics", current.diagnostics)))
-        update_video_job(job_id, **asdict(current))
+        payload = asdict(current)
+        payload.pop("job_id", None)
+        update_video_job(job_id, **payload)
 
     def run() -> None:
         progress(status="running", phase="Planning", progress=2, diagnostics="Processing on Render server...")
