@@ -116,13 +116,13 @@ def probe_audio_duration(path: str) -> float:
     if not os.path.exists(path):
         raise AudioProcessingError(f"Audio file not found: {path}")
     command = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=30)
     if result.returncode != 0:
-        raise AudioProcessingError(f"Unable to measure audio duration: {result.stderr[:300]}")
+        raise AudioProcessingError(f"Unable to measure audio duration: {result.stderr[:500]}")
     try:
         duration = float(result.stdout.strip())
     except ValueError as exc:
-        raise AudioProcessingError(f"Invalid audio duration returned for {path}") from exc
+        raise AudioProcessingError(f"Invalid audio duration returned for {path}: {result.stdout[:200]}") from exc
     if duration <= 0:
         raise AudioProcessingError(f"Audio duration must be positive: {path}")
     return duration
@@ -135,48 +135,72 @@ def concatenate_audio_segments(segments: Sequence[NarrationAudioSegment], output
     output.parent.mkdir(parents=True, exist_ok=True)
     wav_output = output.with_suffix(".wav")
     try:
-        # Re-encode every segment to the same PCM format before concatenation.
-        # This avoids codec/container boundaries sounding like hard cuts.
+        # Normalize every TTS file to a conservative PCM WAV format. Keep this
+        # command deliberately simple: some TTS WAV headers are unusual, and
+        # complex filters can make FFmpeg reject an otherwise valid file.
         normalized: list[str] = []
         for index, item in enumerate(segments, start=1):
             path = Path(item.path).resolve()
             if not path.exists():
                 raise AudioProcessingError(f"Narration audio does not exist: {path}")
+            if path.stat().st_size == 0:
+                raise AudioProcessingError(f"Narration audio is empty: {path}")
+            # Validate the source before attempting conversion so the real
+            # filename and FFmpeg diagnostic are preserved in the error.
+            try:
+                source_duration = probe_audio_duration(str(path))
+            except Exception as exc:
+                raise AudioProcessingError(f"Narration source validation failed for {path}: {exc}") from exc
+            if source_duration <= 0:
+                raise AudioProcessingError(f"Narration source has invalid duration: {path}")
+
             normalized_path = output.with_name(f"{output.stem}_narr_{index:03d}.wav")
             normalize = [
-                "ffmpeg", "-y", "-threads", "1", "-i", str(path),
-                "-af", "aresample=48000,asetpts=PTS-STARTPTS,afade=t=in:d=0.08,afade=t=out:st=max(0\,duration-0.10):d=0.10",
-                "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le", str(normalized_path),
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-threads", "1",
+                "-i", str(path), "-vn", "-ac", "1", "-ar", "48000",
+                "-c:a", "pcm_s16le", str(normalized_path),
             ]
-            result = subprocess.run(normalize, capture_output=True, text=True, check=False)
-            if result.returncode != 0 or not normalized_path.exists():
-                raise AudioProcessingError(f"Narration normalization failed: {result.stderr[:300]}")
+            try:
+                result = subprocess.run(normalize, capture_output=True, text=True, check=False, timeout=120)
+            except subprocess.TimeoutExpired as exc:
+                raise AudioProcessingError(f"Narration normalization timed out for {path}") from exc
+            if result.returncode != 0 or not normalized_path.exists() or normalized_path.stat().st_size == 0:
+                detail = (result.stderr or result.stdout or "FFmpeg returned no diagnostic output").strip()
+                raise AudioProcessingError(f"Narration normalization failed for {path}: {detail[:1000]}")
             normalized.append(str(normalized_path))
 
         # Crossfade short overlaps between narration segments so scene changes
-        # sound continuous instead of like three unrelated recordings.
+        # sound continuous instead of like unrelated recordings.
         current = normalized[0]
         for index, next_path in enumerate(normalized[1:], start=1):
             merged = output.with_name(f"{output.stem}_cross_{index:03d}.wav")
             command = [
-                "ffmpeg", "-y", "-threads", "1", "-i", current, "-i", next_path,
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-threads", "1",
+                "-i", current, "-i", next_path,
                 "-filter_complex", "[0:a][1:a]acrossfade=d=0.12:c1=tri:c2=tri[a]",
-                "-map", "[a]", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le", str(merged),
+                "-map", "[a]", "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", str(merged),
             ]
-            result = subprocess.run(command, capture_output=True, text=True, check=False)
-            if result.returncode != 0 or not merged.exists():
-                raise AudioProcessingError(f"Narration crossfade failed: {result.stderr[:300]}")
-            if current not in normalized[:1]:
-                Path(current).unlink(missing_ok=True)
+            try:
+                result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=120)
+            except subprocess.TimeoutExpired as exc:
+                raise AudioProcessingError(f"Narration crossfade timed out at segment {index + 1}") from exc
+            if result.returncode != 0 or not merged.exists() or merged.stat().st_size == 0:
+                detail = (result.stderr or result.stdout or "FFmpeg returned no diagnostic output").strip()
+                raise AudioProcessingError(f"Narration crossfade failed at segment {index + 1}: {detail[:1000]}")
+            Path(current).unlink(missing_ok=True)
             current = str(merged)
 
-        final_command = ["ffmpeg", "-y", "-threads", "1", "-i", current]
+        final_command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-threads", "1", "-i", current]
         if target_duration is not None:
             final_command += ["-af", f"apad=pad_dur=0.15,atrim=duration={float(target_duration):g},asetpts=N/SR/TB"]
-        final_command += ["-c:a", "libmp3lame", "-b:a", "192k", str(output)]
-        result = subprocess.run(final_command, capture_output=True, text=True, check=False)
+        final_command += ["-vn", "-ac", "2", "-ar", "48000", "-c:a", "libmp3lame", "-b:a", "192k", str(output)]
+        try:
+            result = subprocess.run(final_command, capture_output=True, text=True, check=False, timeout=120)
+        except subprocess.TimeoutExpired as exc:
+            raise AudioProcessingError("Narration finalization timed out") from exc
         if result.returncode != 0:
-            raise AudioProcessingError(f"Narration finalization failed: {result.stderr[:300]}")
+            detail = (result.stderr or result.stdout or "FFmpeg returned no diagnostic output").strip()
+            raise AudioProcessingError(f"Narration finalization failed: {detail[:1000]}")
         if not output.exists() or output.stat().st_size == 0:
             raise AudioProcessingError("Narration finalization produced no audio")
         return str(output)
