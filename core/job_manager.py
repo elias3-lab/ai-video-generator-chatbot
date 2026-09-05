@@ -38,6 +38,13 @@ _lock = Lock()
 _jobs: dict[str, VideoJob] = {}
 
 
+def persistence_status() -> str:
+    """Return a user-safe description of the active job persistence backend."""
+    if storage.enabled:
+        return "🟢 Durable persistence: Dropbox ENABLED — jobs/checkpoints survive Render restarts."
+    return "🟠 Persistence: LOCAL ONLY — Render restart/redeploy can remove active jobs. Configure DROPBOX_ACCESS_TOKEN for durable Resume."
+
+
 def _path(job_id: str) -> Path:
     JOB_DIR.mkdir(parents=True, exist_ok=True)
     return JOB_DIR / f"{job_id}.json"
@@ -54,7 +61,9 @@ def _save(job: VideoJob) -> None:
     tmp.write_text(json.dumps(asdict(job), indent=2), encoding="utf-8")
     tmp.replace(destination)
     if storage.enabled:
-        storage.upload_file(destination, _remote(job.job_id))
+        stored = storage.upload_file(destination, _remote(job.job_id))
+        if not stored:
+            raise RuntimeError("Dropbox persistence is enabled but the job checkpoint could not be uploaded.")
 
 
 def _load(job_id: str) -> Optional[VideoJob]:
@@ -172,5 +181,5 @@ def get_video_job(job_id: str) -> VideoJob:
     with _lock:
         job = _jobs.get(normalized) or _load(normalized)
         if job is None:
-            return VideoJob(job_id=normalized, status="missing", diagnostics="Job not found on this server instance.")
+            return VideoJob(job_id=normalized, status="missing", diagnostics="Job not found in local storage or durable Dropbox storage.")
         return VideoJob(**asdict(job))
