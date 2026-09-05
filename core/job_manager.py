@@ -104,6 +104,34 @@ def list_video_jobs(limit: int = 10) -> list[VideoJob]:
         return sorted(merged.values(), key=lambda item: item.updated_at, reverse=True)[:limit]
 
 
+def _format_eta(progress: int, elapsed_seconds: float) -> str:
+    if progress <= 0 or elapsed_seconds <= 0:
+        return "Calculating..."
+    remaining = max(0.0, elapsed_seconds * (100 - progress) / progress)
+    if remaining < 60:
+        return f"~{max(1, round(remaining))}s"
+    minutes = remaining / 60
+    if minutes < 60:
+        return f"~{max(1, round(minutes))} min"
+    hours = minutes / 60
+    return f"~{hours:.1f} h"
+
+
+def _progress_diagnostics(job: VideoJob, base: str) -> str:
+    if job.status in {"completed", "failed", "missing"}:
+        return base
+    remaining = max(0, job.total_scenes - job.scenes_completed) if job.total_scenes else 0
+    eta = _format_eta(job.progress, job.elapsed_seconds)
+    return (
+        f"{base}\n\n"
+        f"Current stage: 🎬 {job.phase}\n"
+        f"Completed: {job.scenes_completed} / {job.total_scenes} scenes\n"
+        f"Remaining: {remaining} scenes\n"
+        f"Estimated remaining: {eta}\n"
+        f"Server: 🟢 ONLINE"
+    )
+
+
 def start_video_job(
     fn: Callable[[Callable[..., None]], tuple[object, str]],
     *,
@@ -120,7 +148,12 @@ def start_video_job(
 
     def progress(**changes: object) -> None:
         changes["elapsed_seconds"] = round(time.monotonic() - started, 1)
-        update_video_job(job_id, **changes)
+        current = _jobs.get(job_id) or _load(job_id) or job
+        for key, value in changes.items():
+            if hasattr(current, key):
+                setattr(current, key, value)
+        current.diagnostics = _progress_diagnostics(current, str(changes.get("diagnostics", current.diagnostics)))
+        update_video_job(job_id, **asdict(current))
 
     def run() -> None:
         progress(status="running", phase="Planning", progress=2, diagnostics="Processing on Render server...")
