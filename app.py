@@ -56,7 +56,7 @@ def _video_dimensions(video_format: str) -> tuple[int, int]:
     raise ValueError("Unsupported video format. Choose YouTube 16:9 or Shorts 9:16.")
 
 
-def _generate_voice_over(prompt: str, content_type: str, scenes, output_path: str, progress=None) -> tuple[str | None, str, list]:
+def _generate_voice_over(prompt: str, content_type: str, scenes, output_path: str, target_duration: float, progress=None) -> tuple[str | None, str, list]:
     planned = NarrationPlanner.build_segments(prompt, scenes, content_type)
     provider = KokoroProvider(voice=settings.kokoro_voice, speed=settings.kokoro_speed)
     output = Path(output_path)
@@ -72,10 +72,10 @@ def _generate_voice_over(prompt: str, content_type: str, scenes, output_path: st
         generated.append(NarrationAudioSegment(segment, str(scene_path), measured))
         if progress:
             progress(phase="Voice-over", progress=55 + int(20 * index / max(1, total)), voice_completed=index, total_voice=total, diagnostics=f"Voice-over {index}/{total} complete.")
-    concatenate_audio_segments(generated, str(output))
+    concatenate_audio_segments(generated, str(output), target_duration=target_duration)
     measured_segments = [replace(item.segment, duration_seconds=item.duration_seconds) for item in generated]
     total_duration = sum(item.duration_seconds for item in generated)
-    status = f"Voice-over: generated locally with Kokoro ({settings.kokoro_voice}, {len(generated)} scene tracks, {total_duration:.1f}s measured)."
+    status = f"Voice-over: generated locally with Kokoro ({settings.kokoro_voice}, {len(generated)} scene tracks, {total_duration:.1f}s speech + timeline padding)."
     return str(output), status, measured_segments
 
 
@@ -153,7 +153,7 @@ def _run_project(project_id: str, prompt: str, duration_label: str, content_type
     output_dir = Path(settings.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     try:
-        voice_over_path, voice_status, narration_segments = _generate_voice_over(prompt, content_type, completed, str(output_dir / f"{project_id}_voice.mp3"), progress)
+        voice_over_path, voice_status, narration_segments = _generate_voice_over(prompt, content_type, completed, str(output_dir / f"{project_id}_voice.mp3"), duration_seconds, progress)
         if progress:
             progress(phase="Audio", progress=78, diagnostics="Building music, SFX, and subtitles...")
         audio_cues = AudioPlanner.build_cues(completed, content_type=content_type)
