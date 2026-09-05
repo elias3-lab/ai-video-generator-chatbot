@@ -47,18 +47,29 @@ class FinalRenderer:
             raise VideoProcessingError(f"Scene {index} normalization produced no output")
 
     @staticmethod
-    def _concat_scenes(scene_paths: Sequence[str], output_path: str, *, width: int = 1920, height: int = 1080) -> None:
-        """Normalize scenes one at a time, then concatenate by stream copy.
+    def _enforce_duration(video_path: str, output_path: str, duration: float) -> None:
+        """Make the visual timeline exactly the requested duration.
 
-        The previous implementation decoded every scene simultaneously through one
-        large filter graph. That is unnecessarily memory-hungry on Render's small
-        free instance and could terminate the process during final rendering.
+        Short generated clips are extended by holding their final frame; longer
+        clips are trimmed. This prevents a 30-second request from becoming a
+        20-second file merely because the selected scene assets are shorter.
         """
+        if duration <= 0:
+            raise VideoProcessingError("Final duration must be positive")
+        command = [
+            "ffmpeg", "-y", "-threads", "1", "-i", video_path,
+            "-vf", f"tpad=stop_mode=clone:stop_duration={duration:g},setpts=PTS-STARTPTS",
+            "-t", f"{duration:g}", "-an", "-c:v", "libx264", "-preset", "ultrafast",
+            "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart", output_path,
+        ]
+        FinalRenderer._run_ffmpeg(command, "Exact duration normalization")
+
+    @staticmethod
+    def _concat_scenes(scene_paths: Sequence[str], output_path: str, *, width: int = 1920, height: int = 1080) -> None:
         if not scene_paths:
             raise VideoProcessingError("No completed scene videos to render")
         if width <= 0 or height <= 0:
             raise VideoProcessingError("Final render dimensions must be positive")
-
         output = Path(output_path)
         work_dir = output.parent / f".{output.stem}_scene_cache"
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -69,13 +80,11 @@ class FinalRenderer:
                 normalized_path = work_dir / f"scene_{index:03d}.mp4"
                 FinalRenderer._normalize_scene(path, str(normalized_path), width=width, height=height, index=index, total=total)
                 normalized.append(str(normalized_path))
-
             concat_list = work_dir / "concat.txt"
             with concat_list.open("w", encoding="utf-8") as handle:
                 for path in normalized:
                     safe_path = Path(path).resolve().as_posix().replace("'", "'\\''")
                     handle.write(f"file '{safe_path}'\n")
-
             command = [
                 "ffmpeg", "-y", "-threads", "1", "-f", "concat", "-safe", "0",
                 "-i", str(concat_list), "-an", "-c", "copy", "-movflags", "+faststart", output_path,
@@ -97,7 +106,6 @@ class FinalRenderer:
 
     @staticmethod
     def _attach_subtitles(video_path: str, subtitles_path: str, output_path: str) -> None:
-        """Mux an SRT file as a selectable MP4 subtitle track."""
         if not os.path.exists(subtitles_path):
             raise VideoProcessingError(f"Subtitle file does not exist: {subtitles_path}")
         command = [
@@ -116,35 +124,41 @@ class FinalRenderer:
         music: Optional[str] = None, sfx: Sequence[AudioClip] = (), duration: Optional[float] = None,
         width: int = 1920, height: int = 1080, subtitles_path: Optional[str] = None,
     ) -> str:
-        """Concatenate scenes, mix audio, then optionally attach subtitles."""
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
         video_only = str(output.with_name(output.stem + ".video.mp4"))
+        exact_video = str(output.with_name(output.stem + ".exact.mp4"))
         audio_video = str(output.with_name(output.stem + ".audio.mp4"))
         try:
             FinalRenderer._concat_scenes(scene_paths, video_only, width=width, height=height)
+            source_video = video_only
+            if duration is not None:
+                FinalRenderer._enforce_duration(video_only, exact_video, float(duration))
+                source_video = exact_video
 
             if voice_over or music or sfx:
                 timeline = AudioMixer.build_timeline(voice_over=voice_over, music=music, sfx=sfx, duration=duration)
-                command = AudioMixer.build_ffmpeg_command(timeline, audio_video, video_path=video_only)
+                command = AudioMixer.build_ffmpeg_command(timeline, audio_video, video_path=source_video)
                 command[1:1] = ["-threads", "1"]
+                # Never let a short narration track truncate the visual timeline.
+                if duration is not None:
+                    command = command[:-2] + ["-t", f"{float(duration):g}", "-y", audio_video]
                 FinalRenderer._run_ffmpeg(command, "Audio mix")
                 source_for_subtitles = audio_video
             else:
-                source_for_subtitles = video_only
+                source_for_subtitles = source_video
 
             if subtitles_path:
                 FinalRenderer._attach_subtitles(source_for_subtitles, subtitles_path, str(output))
-            else:
-                if source_for_subtitles != str(output):
-                    os.replace(source_for_subtitles, output)
+            elif source_for_subtitles != str(output):
+                os.replace(source_for_subtitles, output)
 
             if not output.exists() or output.stat().st_size == 0:
                 raise VideoProcessingError("Final render produced no MP4")
             LOGGER.info("Final MP4 completed: path=%s bytes=%s", output, output.stat().st_size)
             return str(output)
         finally:
-            for path in (video_only, audio_video):
+            for path in (video_only, exact_video, audio_video):
                 if os.path.exists(path):
                     try:
                         os.remove(path)
