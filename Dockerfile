@@ -25,4 +25,5 @@ ENV KOKORO_VOICE=am_michael \
 
 EXPOSE 7860
 
-CMD ["python", "app.py"]
+# launcher.py performs startup recovery for queued/running jobs, then starts Gradio.
+CMD ["python", "launcher.py"]
