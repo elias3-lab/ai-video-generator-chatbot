@@ -10,7 +10,7 @@ from utils.errors import VideoProcessingError
 
 
 class CinematicAudioGenerator:
-    """Generate a royalty-free ambient bed and subtle transition effects without an external API."""
+    """Generate a richer ambient score and subtle transition effects locally."""
 
     @staticmethod
     def _run(command: list[str], output: Path) -> str:
@@ -22,35 +22,46 @@ class CinematicAudioGenerator:
 
     @classmethod
     def generate_music(cls, output_path: str | Path, duration: float) -> str:
-        """Create a restrained cinematic ambient soundtrack for the exact project duration."""
+        """Create a gentle four-chord documentary score for the exact duration."""
         if duration <= 0:
             raise ValueError("duration must be positive")
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
-        duration_text = f"{duration:g}"
-        # Layer low drones and gentle upper harmonics; keep the bed deliberately quiet
-        # because AudioMixer ducks it further under narration.
-        sources = [
-            ("55", "0.12"),
-            ("82.41", "0.08"),
-            ("110", "0.06"),
-            ("164.81", "0.035"),
-        ]
-        inputs: list[str] = []
-        filters: list[str] = []
-        labels: list[str] = []
-        for index, (frequency, volume) in enumerate(sources):
-            inputs += ["-f", "lavfi", "-i", f"sine=frequency={frequency}:duration={duration_text}:sample_rate=48000"]
-            label = f"m{index}"
-            labels.append(f"[{label}]")
-            filters.append(f"[{index}:a]volume={volume},lowpass=f=1800,asetpts=PTS-STARTPTS[{label}]")
-        filters.append("".join(labels) + f"amix=inputs={len(labels)}:duration=longest:dropout_transition=3,"
-                       f"afade=t=in:d=2,afade=t=out:st={max(0.0, duration - 3):g}:d=3,loudnorm=I=-24:TP=-2:LRA=7[out]")
-        command = ["ffmpeg", "-y"] + inputs + [
-            "-filter_complex", ";".join(filters), "-map", "[out]",
-            "-c:a", "libmp3lame", "-b:a", "128k", str(output),
-        ]
-        return cls._run(command, output)
+        quarter = duration / 4.0
+        chords = (
+            (110.0, 164.81, 220.0, 329.63),
+            (87.31, 130.81, 174.61, 261.63),
+            (65.41, 98.00, 130.81, 196.00),
+            (98.00, 146.83, 196.00, 293.66),
+        )
+        parts: list[str] = []
+        for chord in chords:
+            inputs: list[str] = []
+            filters: list[str] = []
+            labels: list[str] = []
+            for index, frequency in enumerate(chord):
+                inputs += ["-f", "lavfi", "-i", f"sine=frequency={frequency:g}:duration={quarter:g}:sample_rate=48000"]
+                label = f"c{len(parts)}_{index}"
+                labels.append(f"[{label}]")
+                filters.append(
+                    f"[{index}:a]volume=0.035,lowpass=f=2400,"
+                    f"tremolo=f=0.12:d=0.25,asetpts=PTS-STARTPTS[{label}]"
+                )
+            filters.append("".join(labels) + f"amix=inputs=4:duration=longest:dropout_transition=1,afade=t=in:d=0.5,afade=t=out:st={max(0.0, quarter-0.7):g}:d=0.7[out]")
+            part_path = output.with_name(f"{output.stem}_part{len(parts)+1}.wav")
+            command = ["ffmpeg", "-y"] + inputs + ["-filter_complex", ";".join(filters), "-map", "[out]", "-c:a", "pcm_s16le", str(part_path)]
+            cls._run(command, part_path)
+            parts.append(str(part_path))
+
+        manifest = output.with_suffix(".music.txt")
+        try:
+            manifest.write_text("".join(f"file '{Path(p).resolve().as_posix()}'\n" for p in parts), encoding="utf-8")
+            command = ["ffmpeg", "-y", "-threads", "1", "-f", "concat", "-safe", "0", "-i", str(manifest), "-c:a", "libmp3lame", "-b:a", "128k", str(output)]
+            return cls._run(command, output)
+        finally:
+            manifest.unlink(missing_ok=True)
+            for part in parts:
+                Path(part).unlink(missing_ok=True)
 
     @classmethod
     def generate_transition_sfx(cls, output_path: str | Path) -> str:
@@ -67,10 +78,7 @@ class CinematicAudioGenerator:
         return cls._run(command, output)
 
     @classmethod
-    def build_default_layers(
-        cls, output_dir: str | Path, duration: float, scene_count: int,
-    ) -> tuple[str, tuple[AudioClip, ...]]:
-        """Return a guaranteed music bed and scene-transition SFX clips."""
+    def build_default_layers(cls, output_dir: str | Path, duration: float, scene_count: int) -> tuple[str, tuple[AudioClip, ...]]:
         root = Path(output_dir)
         root.mkdir(parents=True, exist_ok=True)
         music = cls.generate_music(root / "cinematic_music.mp3", duration)
@@ -79,8 +87,7 @@ class CinematicAudioGenerator:
         sfx_path = cls.generate_transition_sfx(root / "scene_transition.mp3")
         spacing = duration / scene_count
         clips = tuple(
-            AudioClip(path=sfx_path, start=max(0.0, spacing * index), volume=0.32,
-                      fade_in=0.02, fade_out=0.18, kind="sfx")
+            AudioClip(path=sfx_path, start=max(0.0, spacing * index), volume=0.22, fade_in=0.02, fade_out=0.18, kind="sfx")
             for index in range(1, scene_count)
         )
         return music, clips
