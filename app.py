@@ -14,7 +14,7 @@ from core.audio_plan import AudioPlanner
 from core.cinematic_audio import CinematicAudioGenerator
 from core.director import DirectorPlanner
 from core.final_render import FinalRenderer
-from core.job_manager import get_video_job, list_video_jobs, start_video_job
+from core.job_manager import get_video_job, list_video_jobs, persistence_status, start_video_job
 from core.narration import NarrationAudioSegment, NarrationPlanner, concatenate_audio_segments, probe_audio_duration
 from core.orchestrator import PipelineOrchestrator
 from core.dropbox_storage import storage
@@ -188,13 +188,13 @@ def create_video(prompt: str, duration_label: str, content_type: str = DEFAULT_C
         raise gr.Error("Tell CASTELOU what story to create first.")
     project_id = f"castelou-{uuid.uuid4().hex[:10]}"
     job_id = start_video_job(lambda progress: _run_project(project_id, prompt, duration_label, content_type, video_format, progress), project_id=project_id)
-    return None, f"Job queued: {job_id}\nProject: {project_id}\n\nProcessing on the Render server. You can close the phone while generation continues.\n\nOpen CHECK JOB later.", None
+    return None, f"Job queued: {job_id}\nProject: {project_id}\n\n{persistence_status()}\n\nProcessing on the Render server. You can close the phone while generation continues.\n\nLive progress will refresh automatically every 5 seconds.", None, job_id
 
 
 def resume_video(job_id: str):
     job = get_video_job((job_id or "").strip())
     if job.status == "missing":
-        raise gr.Error("Job not found on this server.")
+        raise gr.Error(f"Job not found. {persistence_status()} Start a new job only after durable persistence is configured if you need Resume after a Render restart.")
     if not job.project_id:
         raise gr.Error("This job has no resumable project ID.")
     project_id = job.project_id
@@ -206,7 +206,7 @@ def resume_video(job_id: str):
     duration_seconds = sum(scene.target_duration or 0 for scene in state.scenes) or 180
     duration_label = min(DURATION_OPTIONS, key=lambda label: abs(DURATION_OPTIONS[label] - duration_seconds))
     new_job_id = start_video_job(lambda progress: _run_project(project_id, prompt, duration_label, DEFAULT_CONTENT_TYPE, DEFAULT_VIDEO_FORMAT, progress), project_id=project_id)
-    return f"Resume started. Job: {new_job_id}\nProject: {project_id}"
+    return f"Resume started. Job: {new_job_id}\nProject: {project_id}\n\n{persistence_status()}"
 
 
 def _format_job(job) -> str:
@@ -219,18 +219,21 @@ def _format_job(job) -> str:
     if job.status == "failed":
         return f"Job {job.job_id}: FAILED\n\n🔴 {job.phase}\n\n{job.diagnostics}"
     if job.status == "missing":
-        return f"Job {job.job_id}: MISSING\n\n{job.diagnostics}"
-    return (f"🎬 VIDEO JOB — {job.job_id}\n\n🟢 {job.status.upper()}  {spinner}\n\n"
+        return f"Job {job.job_id}: MISSING\n\n{job.diagnostics}\n\n{persistence_status()}"
+    return (f"🎬 VIDEO GENERATION — {job.job_id}\n\n🟢 {job.status.upper()}  {spinner}\n\n"
             f"Phase: {job.phase}\n\n{bar} {job.progress}%\n\n"
             f"🎥 Scenes: {job.scenes_completed}/{job.total_scenes}\n"
             f"🎙️ Voice-over: {job.voice_completed}/{job.total_voice}\n"
             f"⏱️ Elapsed: {job.elapsed_seconds:.1f}s\n"
             f"🟢 Render Server: ONLINE\n"
-            f"🔃 Auto-refresh: 5s\n\n{job.diagnostics}")
+            f"🔃 Live update: every 5s\n\n{job.diagnostics}")
 
 
 def check_video_job(job_id: str):
-    job = get_video_job((job_id or "").strip())
+    normalized = (job_id or "").strip()
+    if not normalized:
+        return None, "Waiting for a video job...", None
+    job = get_video_job(normalized)
     if job.status == "completed":
         if job.video_path:
             _restore_final_video(job.project_id or "", job.video_path)
@@ -269,16 +272,19 @@ def build_ui() -> gr.Blocks:
             video_format = gr.Radio(list(VIDEO_FORMATS), value=DEFAULT_VIDEO_FORMAT, label=None, interactive=True)
             prompt = gr.Textbox(label="Prompt", placeholder="Tell me a story about...", lines=5, elem_id="prompt")
             create = gr.Button("CREATE VIDEO", variant="primary", elem_id="create")
+        gr.Markdown(f"### Job Persistence\n{persistence_status()}")
         video = gr.Video(label="Final MP4", autoplay=False)
         download = gr.DownloadButton("DOWNLOAD VIDEO", value=None)
-        diagnostics = gr.Textbox(label="Pipeline Diagnostics", lines=20, interactive=False)
-        create.click(fn=create_video, inputs=[prompt, duration, content_type, video_format], outputs=[video, diagnostics, download])
-        job_id = gr.Textbox(label="Job ID", interactive=True, placeholder="Paste the Job ID returned after starting a video")
+        diagnostics = gr.Textbox(label="Live Pipeline Status", lines=20, interactive=False)
+        job_id = gr.Textbox(label="Job ID", interactive=True, placeholder="Job ID is filled automatically after CREATE VIDEO")
         check = gr.Button("CHECK JOB")
         resume = gr.Button("RESUME VIDEO", variant="secondary", elem_id="resume")
         resumable = gr.Textbox(label="Resumable Jobs", lines=5, interactive=False)
+        create.click(fn=create_video, inputs=[prompt, duration, content_type, video_format], outputs=[video, diagnostics, download, job_id])
         check.click(fn=check_video_job, inputs=[job_id], outputs=[video, diagnostics, download])
         resume.click(fn=resume_video, inputs=[job_id], outputs=[diagnostics])
+        timer = gr.Timer(value=5)
+        timer.tick(fn=check_video_job, inputs=[job_id], outputs=[video, diagnostics, download])
         demo.load(fn=recent_resumable_jobs, inputs=None, outputs=[resumable])
     return demo
 
