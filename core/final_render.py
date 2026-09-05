@@ -29,36 +29,71 @@ class FinalRenderer:
         return result
 
     @staticmethod
+    def _normalize_scene(path: str, output_path: str, *, width: int, height: int, index: int, total: int) -> None:
+        if not os.path.exists(path):
+            raise VideoProcessingError(f"Scene video does not exist: {path}")
+        LOGGER.info("Normalizing scene %s/%s: %s", index, total, path)
+        command = [
+            "ffmpeg", "-y", "-threads", "1", "-i", path,
+            "-vf", (
+                f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p,setpts=PTS-STARTPTS"
+            ),
+            "-an", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart", output_path,
+        ]
+        FinalRenderer._run_ffmpeg(command, f"Scene {index}/{total} normalization")
+        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            raise VideoProcessingError(f"Scene {index} normalization produced no output")
+
+    @staticmethod
     def _concat_scenes(scene_paths: Sequence[str], output_path: str, *, width: int = 1920, height: int = 1080) -> None:
-        """Normalize mixed scene inputs and concatenate them with FFmpeg."""
+        """Normalize scenes one at a time, then concatenate by stream copy.
+
+        The previous implementation decoded every scene simultaneously through one
+        large filter graph. That is unnecessarily memory-hungry on Render's small
+        free instance and could terminate the process during final rendering.
+        """
         if not scene_paths:
             raise VideoProcessingError("No completed scene videos to render")
         if width <= 0 or height <= 0:
             raise VideoProcessingError("Final render dimensions must be positive")
-        for path in scene_paths:
-            if not os.path.exists(path):
-                raise VideoProcessingError(f"Scene video does not exist: {path}")
 
-        inputs: list[str] = []
-        filter_parts: list[str] = []
-        labels: list[str] = []
-        for index, path in enumerate(scene_paths):
-            inputs.extend(["-i", path])
-            label = f"v{index}"
-            labels.append(f"[{label}]")
-            filter_parts.append(
-                f"[{index}:v:0]scale={width}:{height}:force_original_aspect_ratio=decrease,"
-                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p,setpts=PTS-STARTPTS[{label}]"
-            )
-        filter_parts.append("".join(labels) + f"concat=n={len(scene_paths)}:v=1:a=0[vout]")
+        output = Path(output_path)
+        work_dir = output.parent / f".{output.stem}_scene_cache"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        normalized: list[str] = []
+        try:
+            total = len(scene_paths)
+            for index, path in enumerate(scene_paths, start=1):
+                normalized_path = work_dir / f"scene_{index:03d}.mp4"
+                FinalRenderer._normalize_scene(path, str(normalized_path), width=width, height=height, index=index, total=total)
+                normalized.append(str(normalized_path))
 
-        command = ["ffmpeg", "-y", "-threads", "1"] + inputs + [
-            "-filter_complex", ";".join(filter_parts), "-map", "[vout]", "-an",
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", "-pix_fmt", "yuv420p", output_path,
-        ]
-        FinalRenderer._run_ffmpeg(command, "Scene video normalization/concatenation")
-        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-            raise VideoProcessingError("Scene concatenation produced no video output")
+            concat_list = work_dir / "concat.txt"
+            with concat_list.open("w", encoding="utf-8") as handle:
+                for path in normalized:
+                    safe_path = Path(path).resolve().as_posix().replace("'", "'\\''")
+                    handle.write(f"file '{safe_path}'\n")
+
+            command = [
+                "ffmpeg", "-y", "-threads", "1", "-f", "concat", "-safe", "0",
+                "-i", str(concat_list), "-an", "-c", "copy", "-movflags", "+faststart", output_path,
+            ]
+            FinalRenderer._run_ffmpeg(command, "Scene concatenation")
+            if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+                raise VideoProcessingError("Scene concatenation produced no video output")
+        finally:
+            for path in normalized:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            try:
+                (work_dir / "concat.txt").unlink(missing_ok=True)
+                work_dir.rmdir()
+            except OSError:
+                LOGGER.warning("Could not fully clean scene cache: %s", work_dir)
 
     @staticmethod
     def _attach_subtitles(video_path: str, subtitles_path: str, output_path: str) -> None:
@@ -92,8 +127,6 @@ class FinalRenderer:
             if voice_over or music or sfx:
                 timeline = AudioMixer.build_timeline(voice_over=voice_over, music=music, sfx=sfx, duration=duration)
                 command = AudioMixer.build_ffmpeg_command(timeline, audio_video, video_path=video_only)
-                # Keep one FFmpeg worker and avoid unnecessary encoder threads on the
-                # small Render instance. This is especially important during audio mix.
                 command[1:1] = ["-threads", "1"]
                 FinalRenderer._run_ffmpeg(command, "Audio mix")
                 source_for_subtitles = audio_video
